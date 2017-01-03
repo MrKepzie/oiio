@@ -81,7 +81,7 @@ void test_timeintervalformat ()
 
 void test_get_rest_arguments ()
 {
-    int ret;
+    bool ret;
     std::map <std::string, std::string> result;
     std::string base;
     std::string url = "someplace?arg1=value1&arg2=value2";
@@ -293,6 +293,29 @@ void test_repeat ()
     OIIO_CHECK_EQUAL (Strutil::repeat("foo",1), "foo");
     OIIO_CHECK_EQUAL (Strutil::repeat("foo",0), "");
     OIIO_CHECK_EQUAL (Strutil::repeat("foo",-1), "");
+}
+
+
+
+void test_replace ()
+{
+    std::cout << "Testing replace\n";
+    std::string pattern ("Red rose, red rose, end.");
+    // Replace start
+    OIIO_CHECK_EQUAL (Strutil::replace(pattern, "Red", "foo"),
+                      "foo rose, red rose, end.");
+    // Replace end
+    OIIO_CHECK_EQUAL (Strutil::replace(pattern, "end.", "foo"),
+                      "Red rose, red rose, foo");
+    // Pattern not found
+    OIIO_CHECK_EQUAL (Strutil::replace(pattern, "bar", "foo"),
+                      pattern);
+    // One replacement
+    OIIO_CHECK_EQUAL (Strutil::replace(pattern, "rose", "foo"),
+                      "Red foo, red rose, end.");
+    // Global replacement
+    OIIO_CHECK_EQUAL (Strutil::replace(pattern, "rose", "foo", true),
+                      "Red foo, red foo, end.");
 }
 
 
@@ -575,6 +598,7 @@ main (int argc, char *argv[])
     test_split ();
     test_join ();
     test_repeat ();
+    test_replace ();
     test_conversion ();
     test_extract ();
     test_safe_strcpy ();

@@ -57,6 +57,7 @@
 #include <OpenEXR/ImfKeyCodeAttribute.h>
 #include <OpenEXR/ImfEnvmapAttribute.h>
 #include <OpenEXR/ImfCompressionAttribute.h>
+#include <OpenEXR/ImfChromaticitiesAttribute.h>
 #include <OpenEXR/IexBaseExc.h>
 #include <OpenEXR/IexThrowErrnoExc.h>
 #ifdef USE_OPENEXR_VERSION2
@@ -84,9 +85,9 @@
 #include "OpenImageIO/fmath.h"
 #include "OpenImageIO/filesystem.h"
 #include "OpenImageIO/imagebufalgo_util.h"
+#include "OpenImageIO/sysutil.h"
 
 #include <boost/scoped_array.hpp>
-#include <boost/scoped_ptr.hpp>
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
@@ -100,49 +101,40 @@ public:
     OpenEXRInputStream (const char *filename) : Imf::IStream (filename) {
         // The reason we have this class is for this line, so that we
         // can correctly handle UTF-8 file paths on Windows
-        {
-            std::istream* ifsraw;
-            Filesystem::open (&ifsraw, filename, std::ios_base::binary);
-            if (ifsraw) {
-                ifs.reset(ifsraw);
-            }
-        }
-        if (!ifs)
+        Filesystem::open (ifs, filename, std::ios_base::binary);
+        if (!ifs) 
             Iex::throwErrnoExc ();
     }
     virtual bool read (char c[], int n) {
-        if (!ifs)
+        if (!ifs) 
             throw Iex::InputExc ("Unexpected end of file.");
+		
         errno = 0;
-        ifs->read (c, n);
+        ifs.read (c, n);
         return check_error ();
     }
     virtual Imath::Int64 tellg () {
-        return ifs ? std::streamoff (ifs->tellg ()) : 0;
+        return std::streamoff (ifs.tellg ());
     }
     virtual void seekg (Imath::Int64 pos) {
-        if (!ifs) {
-            Iex::throwErrnoExc ();
-        }
-        ifs->seekg (pos);
+        ifs.seekg (pos);
         check_error ();
     }
     virtual void clear () {
-        if (ifs) {
-            ifs->clear ();
-        }
+        ifs.clear ();
     }
 
 private:
     bool check_error () {
         if (!ifs) {
-            if (errno)
+            if (errno) 
                 Iex::throwErrnoExc ();
+			
             return false;
         }
         return true;
     }
-    boost::scoped_ptr<std::istream> ifs;
+    OIIO::ifstream ifs;
 };
 
 
@@ -307,7 +299,7 @@ private:
         // FIXME: Things to consider in the future:
         // preview
         // screenWindowCenter
-        // chromaticities whiteLuminance adoptedNeutral
+        // adoptedNeutral
         // renderingTransform, lookModTransform
         // utcOffset
         // longitude latitude altitude
@@ -328,7 +320,14 @@ void set_exr_threads ()
 
     int oiio_threads = 1;
     OIIO::getattribute ("exr_threads", oiio_threads);
-
+    
+    // 0 means all threads in OIIO, but single-threaded in OpenEXR
+    // -1 means single-threaded in OIIO
+    if (oiio_threads == 0) {
+        oiio_threads = Sysutil::hardware_concurrency();
+    } else if (oiio_threads == -1) {
+        oiio_threads = 0;
+    }
     spin_lock lock (exr_threads_mutex);
     if (exr_threads != oiio_threads) {
         exr_threads = oiio_threads;
@@ -481,7 +480,11 @@ OpenEXRInput::PartInfo::parse_header (const Imf::Header *header)
     spec.full_depth = 1;
     spec.tile_depth = 1;
 
-    if (header->hasTileDescription()) {
+    if (header->hasTileDescription()
+#if USE_OPENEXR_VERSION2
+        && Strutil::icontains(header->type(), "tile")
+#endif
+        ) {
         const Imf::TileDescription &td (header->tileDescription());
         spec.tile_width = td.xSize;
         spec.tile_height = td.ySize;
@@ -574,6 +577,7 @@ OpenEXRInput::PartInfo::parse_header (const Imf::Header *header)
         const Imf::Box2fAttribute *b2fattr;
         const Imf::TimeCodeAttribute *tattr;
         const Imf::KeyCodeAttribute *kcattr;
+        const Imf::ChromaticitiesAttribute *crattr;
 #ifdef USE_OPENEXR_VERSION2
         const Imf::StringVectorAttribute *svattr;
         const Imf::DoubleAttribute *dattr;
@@ -696,6 +700,11 @@ OpenEXRInput::PartInfo::parse_header (const Imf::Header *header)
             if (oname == "keyCode")
                 oname = "smpte:KeyCode";
             spec.attribute(oname, TypeDesc::TypeKeyCode, keycode);
+        } else if (type == "chromaticities" &&
+                   (crattr = header->findTypedAttribute<Imf::ChromaticitiesAttribute> (name))) {
+            const Imf::Chromaticities *chroma = &crattr->value();
+            spec.attribute (oname, TypeDesc(TypeDesc::FLOAT,8),
+                            (const float *)chroma);
         }
         else {
 #if 0
@@ -1313,4 +1322,3 @@ OpenEXRInput::read_native_deep_tiles (int xbegin, int xend,
 
 
 OIIO_PLUGIN_NAMESPACE_END
-

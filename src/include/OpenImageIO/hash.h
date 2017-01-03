@@ -50,8 +50,24 @@
 #include "fmath.h"   /* for endian */
 #include "string_view.h"   /* for endian */
 
+#if OIIO_CPLUSPLUS_VERSION >= 11 || OIIO_MSVS_AT_LEAST_2013
+#  include <unordered_map>
+#else /* FIXME(C++11): remove this after making C++11 the baseline */
+#  include <boost/unordered_map.hpp>
+#endif
+
 
 OIIO_NAMESPACE_BEGIN
+
+// Define OIIO::unordered_map and OIIO::hash as either std or boost.
+#if OIIO_CPLUSPLUS_VERSION >= 11 || OIIO_MSVS_AT_LEAST_2013
+using std::unordered_map;
+using std::hash;
+#else /* FIXME(C++11): remove this after making C++11 the baseline */
+using boost::unordered_map;
+using boost::hash;
+#endif
+
 
 namespace xxhash {
 

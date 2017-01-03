@@ -1251,6 +1251,13 @@ set_fullsize (int argc, const char *argv[])
         spec.full_y = y;
         spec.full_width = w;
         spec.full_height = h;
+        // That updated the private spec of the ImageRec. In this case
+        // we really need to update the underlying IB as well.
+        ImageSpec &ibspec = (*A)(0,0).specmod();
+        ibspec.full_x = x;
+        ibspec.full_y = y;
+        ibspec.full_width = w;
+        ibspec.full_height = h;
         A->metadata_modified (true);
     }
     ot.function_times[command] += timer();
@@ -3700,7 +3707,7 @@ output_file (int argc, const char *argv[])
             if (ot.debug)
                 std::cout << "  Converting from " << currentspace << " to "
                           << outcolorspace << " for output to " << filename << "\n";
-            const char *argv[] = { "colorconvert", "", outcolorspace.c_str() };
+            const char *argv[] = { "colorconvert", currentspace.c_str(), outcolorspace.c_str() };
             action_colorconvert (3, argv);
             ir = ot.curimg;
         }
@@ -4367,9 +4374,10 @@ handle_sequence (int argc, const char **argv)
 int
 main (int argc, char *argv[])
 {
-// When Visual Studio is used float values in scientific format are printed 
-// with three digit exponent. We change this behavior to fit the Linux way.
-#ifdef _MSC_VER
+#if OIIO_MSVS_BEFORE_2015
+     // When older Visual Studio is used, float values in scientific foramt
+     // are printed with three digit exponent. We change this behaviour to
+     // fit Linux way.
     _set_output_format (_TWO_DIGIT_EXPONENT);
 #endif
 

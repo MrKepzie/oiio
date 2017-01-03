@@ -19,6 +19,13 @@ if (NOT USE_EXTERNAL_PUGIXML)
     endif ()
 endif()
 
+# Make the build complete for newer ffmpeg versions (3.1.1+) that have
+# marked m_format_context->streams[i]->codec as deprecated.
+# FIXME -- at some point, come back and figure out how to fix for real
+# before the field disappears entirely.
+set_source_files_properties (../ffmpeg.imageio/ffmpeginput.cpp
+                             PROPERTIES COMPILE_FLAGS "-Wno-deprecated-declarations")
+
 set (libOpenImageIO_srcs deepdata.cpp exif.cpp formatspec.cpp imagebuf.cpp
                           imageinput.cpp imageio.cpp imageioplugin.cpp
                           imageoutput.cpp iptc.cpp xmp.cpp
@@ -112,7 +119,6 @@ if (EMBEDPLUGINS)
         add_definitions ("-DUSE_BOOST_ASIO=1")
     endif ()
     find_package (PNG REQUIRED)
-    find_package (JPEG REQUIRED)
     find_package (TIFF REQUIRED)
     find_package (ZLIB REQUIRED)
     include_directories (${PNG_INCLUDE_DIR} ${JPEG_INCLUDE_DIR})
@@ -154,14 +160,19 @@ if (EMBEDPLUGINS)
     endif()
 
     if (OPENJPEG_FOUND AND USE_OPENJPEG)
-        set (libOpenImageIO_srcs ${libOpenImageIO_srcs}
-             ../jpeg2000.imageio/jpeg2000input.cpp ../jpeg2000.imageio/jpeg2000output.cpp)
+        if (${OPENJPEG_VERSION} VERSION_LESS 2.0)
+            set (libOpenImageIO_srcs ${libOpenImageIO_srcs}
+                 ../jpeg2000.imageio/jpeg2000input-v1.cpp ../jpeg2000.imageio/jpeg2000output-v1.cpp)
+        else ()
+            set (libOpenImageIO_srcs ${libOpenImageIO_srcs}
+                 ../jpeg2000.imageio/jpeg2000input.cpp ../jpeg2000.imageio/jpeg2000output.cpp)
+        endif ()
         include_directories (${OPENJPEG_INCLUDE_DIR})
         add_definitions("-DUSE_OPENJPEG")
     else()
         message (STATUS "Jpeg-2000 plugin will not be built")
     endif()
-    
+
     if (LIBRAW_FOUND AND USE_LIBRAW)
         set (libOpenImageIO_srcs ${libOpenImageIO_srcs}
             ../raw.imageio/rawinput.cpp ../raw.imageio/rawoutput.cpp)
@@ -184,22 +195,10 @@ if (EMBEDPLUGINS)
     endif ()
 
 
-    if (USE_PTEX)
+    if (PTEX_FOUND)
         set (libOpenImageIO_srcs ${libOpenImageIO_srcs}
              ../ptex.imageio/ptexinput.cpp
              ../ptex.imageio/ptexoutput.cpp)
-        if (NOT PTEX_FOUND)
-            # No external Ptex found -- use embedded one
-            set (libOpenImageIO_srcs ${libOpenImageIO_srcs}
-                ../ptex.imageio/ptex/PtexCache.cpp ../ptex.imageio/ptex/PtexFilters.cpp
-                ../ptex.imageio/ptex/PtexHalf.cpp ../ptex.imageio/ptex/PtexReader.cpp
-                ../ptex.imageio/ptex/PtexSeparableFilter.cpp
-                ../ptex.imageio/ptex/PtexSeparableKernel.cpp
-                ../ptex.imageio/ptex/PtexTriangleFilter.cpp
-                ../ptex.imageio/ptex/PtexTriangleKernel.cpp
-                ../ptex.imageio/ptex/PtexUtils.cpp ../ptex.imageio/ptex/PtexWriter.cpp)
-            message (STATUS "Using embedded PTex source")
-        endif ()
         include_directories (${PTEX_INCLUDE_DIR})
         add_definitions("-DUSE_PTEX")
     else()
@@ -259,7 +258,7 @@ endif ()
 # Include OpenCV if using it
 if (OpenCV_FOUND)
     include_directories (${OpenCV_INCLUDE_DIR})
-    target_link_libraries (OpenImageIO opencv_core opencv_highgui)
+    target_link_libraries (OpenImageIO ${OpenCV_LIBS})
 endif ()
 
 # Include OpenSSL if using it
@@ -287,12 +286,12 @@ if (EMBEDPLUGINS)
                                ${JPEG_LIBRARIES}
                                ${FIELD3D_LIBRARY}
                                ${HDF5_LIBRARIES}
+                               ${OPENEXR_LIBRARIES}
                                ${OPENJPEG_LIBRARIES}
                                ${PTEX_LIBRARY}
                                ${WEBP_LIBRARY}
                                ${ZLIB_LIBRARIES}
                           )
-    link_openexr (OpenImageIO)
     if (USE_GIF AND GIF_FOUND)
         target_link_libraries (OpenImageIO ${GIF_LIBRARY})
     endif ()
@@ -302,7 +301,7 @@ if (EMBEDPLUGINS)
     endif ()
 endif ()
 
-link_ilmbase (OpenImageIO)
+target_link_libraries (OpenImageIO ${ILMBASE_LIBRARIES})
 
 if (USE_EXTERNAL_PUGIXML)
     target_link_libraries (OpenImageIO ${PUGIXML_LIBRARIES})
@@ -349,19 +348,16 @@ if (OIIO_BUILD_TESTS)
     add_executable (imagebuf_test imagebuf_test.cpp)
     set_target_properties (imagebuf_test PROPERTIES FOLDER "Unit Tests")
     target_link_libraries (imagebuf_test OpenImageIO ${Boost_LIBRARIES} ${CMAKE_DL_LIBS})
-    link_ilmbase (imagebuf_test)
     add_test (unit_imagebuf imagebuf_test)
 
     add_executable (imagecache_test imagecache_test.cpp)
     set_target_properties (imagecache_test PROPERTIES FOLDER "Unit Tests")
     target_link_libraries (imagecache_test OpenImageIO ${Boost_LIBRARIES} ${CMAKE_DL_LIBS})
-    link_ilmbase (imagecache_test)
     add_test (unit_imagecache imagecache_test)
 
     add_executable (imagebufalgo_test imagebufalgo_test.cpp)
     set_target_properties (imagebufalgo_test PROPERTIES FOLDER "Unit Tests")
     target_link_libraries (imagebufalgo_test OpenImageIO ${Boost_LIBRARIES} ${CMAKE_DL_LIBS})
-    link_ilmbase (imagebufalgo_test)
     add_test (unit_imagebufalgo imagebufalgo_test)
 
     add_executable (imagespec_test imagespec_test.cpp)
@@ -372,7 +368,6 @@ if (OIIO_BUILD_TESTS)
     add_executable (imagespeed_test imagespeed_test.cpp)
     set_target_properties (imagespeed_test PROPERTIES FOLDER "Unit Tests")
     target_link_libraries (imagespeed_test OpenImageIO ${Boost_LIBRARIES} ${CMAKE_DL_LIBS})
-    link_ilmbase (imagespeed_test)
     #add_test (imagespeed_test imagespeed_test)
 
 endif (OIIO_BUILD_TESTS)

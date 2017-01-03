@@ -106,6 +106,34 @@ void test_loadstore ()
 
 
 
+void
+test_int4_to_uint16s ()
+{
+    int4 i (0xffff0001, 0xffff0002, 0xffff0003, 0xffff0004);
+    unsigned short s[4];
+    i.store (s);
+    OIIO_CHECK_EQUAL (s[0], 1);
+    OIIO_CHECK_EQUAL (s[1], 2);
+    OIIO_CHECK_EQUAL (s[2], 3);
+    OIIO_CHECK_EQUAL (s[3], 4);
+}
+
+
+
+void
+test_int4_to_uint8s ()
+{
+    int4 i (0xffffff01, 0xffffff02, 0xffffff03, 0xffffff04);
+    unsigned char c[4];
+    i.store (c);
+    OIIO_CHECK_EQUAL (int(c[0]), 1);
+    OIIO_CHECK_EQUAL (int(c[1]), 2);
+    OIIO_CHECK_EQUAL (int(c[2]), 3);
+    OIIO_CHECK_EQUAL (int(c[3]), 4);
+}
+
+
+
 template<typename VEC>
 void test_component_access ()
 {
@@ -140,6 +168,30 @@ void test_component_access ()
 
 
 
+template<>
+void test_component_access<mask4> ()
+{
+    typedef mask4 VEC;
+    typedef VEC::value_t ELEM;
+    std::cout << "test_component_access " << VEC::type_name() << "\n";
+
+    VEC a (false, true, true, true);
+    OIIO_CHECK_EQUAL (bool(a[0]), false);
+    OIIO_CHECK_EQUAL (bool(a[1]), true);
+    OIIO_CHECK_EQUAL (bool(a[2]), true);
+    OIIO_CHECK_EQUAL (bool(a[3]), true);
+    OIIO_CHECK_EQUAL (extract<0>(a), false);
+    OIIO_CHECK_EQUAL (extract<1>(a), true);
+    OIIO_CHECK_EQUAL (extract<2>(a), true);
+    OIIO_CHECK_EQUAL (extract<3>(a), true);
+    OIIO_CHECK_SIMD_EQUAL (insert<0>(a, ELEM(true)), VEC(true,true,true,true));
+    OIIO_CHECK_SIMD_EQUAL (insert<1>(a, ELEM(false)), VEC(false,false,true,true));
+    OIIO_CHECK_SIMD_EQUAL (insert<2>(a, ELEM(false)), VEC(false,true,false,true));
+    OIIO_CHECK_SIMD_EQUAL (insert<3>(a, ELEM(false)), VEC(false,true,true,false));
+}
+
+
+
 template<typename VEC>
 void test_arithmetic ()
 {
@@ -154,6 +206,37 @@ void test_arithmetic ()
     OIIO_CHECK_SIMD_EQUAL (a/b, VEC(a[0]/b[0],a[1]/b[1],a[2]/b[2],a[3]/b[3]));
     OIIO_CHECK_EQUAL (reduce_add(b), ELEM(10));
     OIIO_CHECK_SIMD_EQUAL (vreduce_add(b), VEC(ELEM(10)));
+}
+
+
+
+void test_bitwise_int4 ()
+{
+    typedef int4 VEC;
+    typedef int ELEM;
+    std::cout << "test_bitwise " << VEC::type_name() << "\n";
+
+    OIIO_CHECK_SIMD_EQUAL (VEC(0x12341234) & VEC(0x11111111), VEC(0x10101010));
+    OIIO_CHECK_SIMD_EQUAL (VEC(0x12341234) | VEC(0x11111111), VEC(0x13351335));
+    OIIO_CHECK_SIMD_EQUAL (VEC(0x12341234) ^ VEC(0x11111111), VEC(0x03250325));
+    OIIO_CHECK_SIMD_EQUAL (~(VEC(0x12341234)), VEC(0xedcbedcb));
+}
+
+
+
+void test_bitwise_mask4 ()
+{
+    typedef mask4 VEC;
+    typedef int ELEM;
+    std::cout << "test_bitwise " << VEC::type_name() << "\n";
+
+    OIIO_CHECK_SIMD_EQUAL (VEC(true, true, false, false) & VEC(true, false, true, false),
+                           VEC(true, false, false, false));
+    OIIO_CHECK_SIMD_EQUAL (VEC(true, true, false, false) | VEC(true, false, true, false),
+                           VEC(true, true, true, false));
+    OIIO_CHECK_SIMD_EQUAL (VEC(true, true, false, false) ^ VEC(true, false, true, false),
+                           VEC(false, true, true, false));
+    OIIO_CHECK_SIMD_EQUAL (~(VEC(true, true, false, false)), VEC(false, false, true, true));
 }
 
 
@@ -301,6 +384,23 @@ void test_vectorops ()
 
 
 
+void test_constants ()
+{
+    std::cout << "test_constants\n";
+
+    OIIO_CHECK_SIMD_EQUAL (mask4::False(), mask4(false));
+    OIIO_CHECK_SIMD_EQUAL (mask4::True(), mask4(true));
+
+    OIIO_CHECK_SIMD_EQUAL (int4::Zero(), int4(0));
+    OIIO_CHECK_SIMD_EQUAL (int4::One(), int4(1));
+    OIIO_CHECK_SIMD_EQUAL (int4::NegOne(), int4(-1));
+
+    OIIO_CHECK_SIMD_EQUAL (float4::Zero(), float4(0.0f));
+    OIIO_CHECK_SIMD_EQUAL (float4::One(), float4(1.0f));
+}
+
+
+
 // Miscellaneous one-off stuff not caught by other tests
 void test_special ()
 {
@@ -337,6 +437,8 @@ main (int argc, char *argv[])
 
     std::cout << "\n";
     test_loadstore<float4> ();
+    test_int4_to_uint16s ();
+    test_int4_to_uint8s ();
     test_component_access<float4> ();
     test_arithmetic<float4> ();
     test_comparisons<float4> ();
@@ -350,6 +452,7 @@ main (int argc, char *argv[])
     test_loadstore<int4> ();
     test_component_access<int4> ();
     test_arithmetic<int4> ();
+    test_bitwise_int4 ();
     test_comparisons<int4> ();
     test_shuffle<int4> ();
     test_swizzle<float4> ();
@@ -359,7 +462,10 @@ main (int argc, char *argv[])
 
     std::cout << "\n";
     test_shuffle<mask4> ();
+    test_component_access<mask4> ();
+    test_bitwise_mask4 ();
 
+    test_constants();
     test_special();
 
     return unit_test_failures;

@@ -501,14 +501,40 @@ Strutil::repeat (string_view str, int n)
 
 
 
+std::string
+Strutil::replace (string_view str, string_view pattern,
+                  string_view replacement, bool global)
+{
+    std::string r;
+    while (1) {
+        size_t f = str.find (pattern);
+        if (f != str.npos) {
+            // Pattern found -- copy the part of str prior to the pattern,
+            // then copy the replacement, and skip str up to the part after
+            // the pattern and continue for another go at it.
+            r.append (str.data(), f);
+            r.append (replacement.data(), replacement.size());
+            str.remove_prefix (f + pattern.size());
+            if (global)
+                continue;   // Try for another match
+        }
+        // Pattern not found -- copy remaining string and we're done
+        r.append (str.data(), str.size());
+        break;
+    }
+    return r;
+}
+
+
+
 #ifdef _WIN32
 std::wstring
 Strutil::utf8_to_utf16 (string_view str)
 {
     std::wstring native;
     
-    native.resize(MultiByteToWideChar (CP_UTF8, 0, str.c_str(), -1, NULL, 0));
-    MultiByteToWideChar (CP_UTF8, 0, str.c_str(), -1, &native[0], (int)native.size());
+    native.resize(MultiByteToWideChar (CP_UTF8, 0, str.data(), str.length(), NULL, 0));
+    MultiByteToWideChar (CP_UTF8, 0, str.data(), str.length(), &native[0], (int)native.size());
 
     return native;
 }
@@ -520,8 +546,8 @@ Strutil::utf16_to_utf8 (const std::wstring& str)
 {
     std::string utf8;
 
-    utf8.resize(WideCharToMultiByte (CP_UTF8, 0, str.c_str(), -1, NULL, 0, NULL, NULL));
-    WideCharToMultiByte (CP_UTF8, 0, str.c_str(), -1, &utf8[0], (int)utf8.size(), NULL, NULL);
+    utf8.resize(WideCharToMultiByte (CP_UTF8, 0, str.data(), str.length(), NULL, 0, NULL, NULL));
+    WideCharToMultiByte (CP_UTF8, 0, str.data(), str.length(), &utf8[0], (int)utf8.size(), NULL, NULL);
 
     return utf8;
 }

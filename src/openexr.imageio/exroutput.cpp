@@ -56,6 +56,7 @@
 #include <OpenEXR/ImfBoxAttribute.h>
 #include <OpenEXR/ImfEnvmapAttribute.h>
 #include <OpenEXR/ImfCompressionAttribute.h>
+#include <OpenEXR/ImfChromaticitiesAttribute.h>
 #include <OpenEXR/ImfCRgbaFile.h>  // JUST to get symbols to figure out version!
 #include <OpenEXR/IexBaseExc.h>
 #include <OpenEXR/IexThrowErrnoExc.h>
@@ -86,8 +87,6 @@
 #include "OpenImageIO/sysutil.h"
 #include "OpenImageIO/fmath.h"
 
-#include <boost/scoped_ptr.hpp>
-
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
 
@@ -101,32 +100,20 @@ public:
     OpenEXROutputStream (const char *filename) : Imf::OStream(filename) {
         // The reason we have this class is for this line, so that we
         // can correctly handle UTF-8 file paths on Windows
-        {
-            std::ostream* rawhandle;
-            Filesystem::open (&rawhandle, filename, std::ios_base::binary);
-            if (rawhandle) {
-                ofs.reset(rawhandle);
-            }
-        }
-        if (!ofs)
+        Filesystem::open (ofs, filename, std::ios_base::binary);
+        if (!ofs) 	
             Iex::throwErrnoExc ();
     }
     virtual void write (const char c[], int n) {
-        if (!ofs) {
-            Iex::throwErrnoExc ();
-        }
         errno = 0;
-        ofs->write (c, n);
+        ofs.write (c, n);
         check_error ();
     }
     virtual Imath::Int64 tellp () {
-        return ofs ? std::streamoff (ofs->tellp ()) : 0;
+        return std::streamoff (ofs.tellp ());
     }
     virtual void seekp (Imath::Int64 pos) {
-        if (!ofs) {
-            Iex::throwErrnoExc ();
-        }
-        ofs->seekp (pos);
+        ofs.seekp (pos);
         check_error ();
     }
 
@@ -138,7 +125,7 @@ private:
             throw Iex::ErrnoExc ("File output failed.");
         }
     }
-    boost::scoped_ptr<std::ostream> ofs;
+    OIIO::ofstream ofs;
 };
 
 
@@ -732,7 +719,7 @@ OpenEXROutput::spec_to_header (ImageSpec &spec, int subimage, Imf::Header &heade
     // Fix up density and aspect to be consistent
     float aspect = spec.get_float_attribute ("PixelAspectRatio", 0.0f);
     float xdensity = spec.get_float_attribute ("XResolution", 0.0f);
-    float ydensity = spec.get_float_attribute ("XResolution", 0.0f);
+    float ydensity = spec.get_float_attribute ("YResolution", 0.0f);
     if (! aspect && xdensity && ydensity) {
         // No aspect ratio. Compute it from density, if supplied.
         spec.attribute ("PixelAspectRatio", xdensity / ydensity);
@@ -1201,6 +1188,14 @@ OpenEXROutput::put_parameter (const std::string &name, TypeDesc type,
                     return true;
 #endif
             }
+        }
+        if (type.basetype == TypeDesc::FLOAT && type.aggregate * type.arraylen == 8
+            && Strutil::iequals (xname, "chromaticities")) {
+            const float *f = (const float *)data;
+            Imf::Chromaticities c (Imath::V2f(f[0], f[1]), Imath::V2f(f[2], f[3]),
+                                   Imath::V2f(f[4], f[5]), Imath::V2f(f[6], f[7]));
+            header.insert ("chromaticities", Imf::ChromaticitiesAttribute (c));
+            return true;
         }
 #ifdef USE_OPENEXR_VERSION2
         // String Vector
