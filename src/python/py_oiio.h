@@ -35,11 +35,11 @@
 #undef SIZEOF_LONG
 #include <boost/python.hpp>
 
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/typedesc.h"
-#include "OpenImageIO/imagecache.h"
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/deepdata.h"
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/typedesc.h>
+#include <OpenImageIO/imagecache.h>
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/deepdata.h>
 
 
 #if PY_MAJOR_VERSION < 2 || (PY_MAJOR_VERSION == 2 && PY_MINOR_VERSION < 5)
@@ -51,7 +51,7 @@ namespace PyOpenImageIO
 
 using namespace boost::python;
 
-OIIO_NAMESPACE_USING
+using namespace OIIO;
 
 void declare_imagespec(); 
 void declare_imageinput();
@@ -172,7 +172,7 @@ attribute_typed (T &myobj, string_view name, TypeDesc type, object &dataobj)
         if (vals.size() == type.numelements()*type.aggregate) {
             std::vector<ustring> u;
             for (size_t i = 0, e = vals.size(); i < e; ++i)
-                u.push_back (ustring(vals[i]));
+                u.emplace_back(vals[i]);
             myobj.attribute (name, type, &u[0]);
         }
         return;
@@ -207,7 +207,7 @@ attribute_tuple_typed (T &myobj, string_view name,
         if (vals.size() == type.numelements()*type.aggregate) {
             std::vector<ustring> u;
             for (size_t i = 0, e = vals.size(); i < e; ++i)
-                u.push_back (ustring(vals[i]));
+                u.emplace_back(vals[i]);
             myobj.attribute (name, type, &u[0]);
         }
         return;
@@ -364,7 +364,6 @@ private:
 public:
     static ImageCacheWrap *create (bool);
     static void destroy (ImageCacheWrap*);
-    void clear ();     
     void attribute_int    (const std::string&, int );
     void attribute_float  (const std::string&, float);
     void attribute_string (const std::string&, const std::string&);

@@ -275,7 +275,9 @@ Section~\ref{sec:ImageSpec}, is replicated for Python.
 {\ce ImageSpec} (basetype) \\
 {\ce ImageSpec} (typedesc) \\
 {\ce ImageSpec} (xres, yres, nchannels, basetype) \\
-{\ce ImageSpec} (xres, yres, nchannels, typespec)}
+{\ce ImageSpec} (xres, yres, nchannels, typespec) \\
+{\ce ImageSpec} (roi, basetype) \\
+{\ce ImageSpec} (roi, typespec)}
 Constructors of an \ImageSpec. These correspond directly to the constructors
 in the C++ bindings.
 
@@ -292,6 +294,9 @@ in the C++ bindings.
 
     # construct with known resolution, channels, pixel data type
     s = ImageSpec(640, 480, 4, oiio.HALF)
+
+    # construct from an ROI
+    s = ImageSpec (ROI(0,640,0,480,0,1,0,3), oiio.FLOAT)
 \end{code}
 \apiend
 
@@ -360,8 +365,7 @@ image, of {\cf False} if it is an ordinary image.
 \apiitem{ImageSpec.{\ce set_format} (basetype) \\
 ImageSpec.{\ce set_format} (typedesc)}
 Given a {\cf BASETYPE} or a \TypeDesc, sets the {\cf format} field and
-also sets all the {\cf quantize} fields to the defaults for the given
-data format.
+clear any per-channel formats in {\cf channelformats}.
 
 \noindent Example:
 \begin{code}
@@ -409,8 +413,8 @@ Section~\ref{sec:ImageSpecMemberFuncs} for details.)
 
 \apiitem{ImageSpec.{\ce erase_attribute} (name, searchtype=TypeDesc(TypeDesc.UNKNOWN),\\
 \bigspc\bigspc\spc casesensitive=False)}
-Remove the specified attribute from the list of extra_attribs. If not found,
-do nothing.
+Remove any specified attributes matching the regular expression {\cf name}
+from the list of extra_attribs.
 \apiend
 
 \apiitem{ImageSpec.{\ce attribute} (name, int) \\
@@ -590,11 +594,12 @@ Constructs a \DeepData object. It needs to have its {\cf init()} and
 {\cf alloc()} methods called before it can hold any meaningful data.
 \apiend
 
-\apiitem{DeepData.{\ce init} (npixels, nchannels, pixeltypes)}
+\apiitem{DeepData.{\ce init} (npixels, nchannels, channeltypes, channelnames)}
 Initializes this \DeepData to hold {\cf npixels} total pixels, with
 {\cf nchannels} color channels. The data types of the channels are
-described by {\cf pixeltypes}, a tuple of \TypeDesc values (one per
-channel). After calling {\cf init}, you still need to set the number of
+described by {\cf channeltypes}, a tuple of \TypeDesc values (one per
+channel), and the names are provided in a tuple of {\cf string}s
+{\cf channelnames}. After calling {\cf init}, you still need to set the number of
 samples for each pixel (using {\cf set_nsamples}) and then call {\cf alloc()}
 to actually allocate the sample memory.
 \apiend
@@ -608,6 +613,24 @@ collection of deep data.
 This {\cf int} field constains the number of channels.
 \apiend
 
+
+\apiitem{string DeepData.{\ce channelname} (c)}
+Retrieve the name of channel {\cf c}.
+\apiend
+
+\apiitem{TypeDesc DeepData.{\ce channeltype} (c)}
+Retrieve the data type of channel {\cf c}.
+\apiend
+
+\apiitem{int DeepData.{\ce channelsize} (c)}
+Retrieve the size (in bytes) of one datum of channel {\cf c}.
+\apiend
+
+\apiitem{int DeepData.{\ce samplesize} ()}
+Retrieve the packed size (in bytes) of all channels of one sample.
+\apiend
+
+
 \apiitem{DeepData.{\ce set_samples} (pixel, nsamples) \\
 int DeepData.{\ce samples} (pixel)}
 Set or get the number of samples for a given pixel (specified by integer
@@ -616,7 +639,6 @@ index).
 
 \apiitem{DeepData.{\ce insert_samples} (pixel, samplepos, n) \\
 int DeepData.{\ce erase_samples} (pixel, samplepos, n)}
-\NEW % 1.7
 Insert or erase \emph{n} samples starting at the given position of an
 indexed pixel.
 \apiend
@@ -633,6 +655,35 @@ Retrieve the specific value of a given pixel,
 channel, and sample index (for float or uint channels, respectively).
 \apiend
 
+\apiitem{DeepData.{\ce copy_deep_sample} (pixel, sample, src, srcpixel, srcsample)}
+Copy a deep sample from \DeepData {\cf src} into this \DeepData.
+\apiend
+
+\apiitem{DeepData.{\ce copy_deep_pixel} (pixel, src, srcpixel)}
+Copy a deep pixel from \DeepData {\cf src} into this \DeepData.
+\apiend
+
+\apiitem{DeepData.{\ce split} (pixel, depth)}
+Split any samples of the pixel that cross {\cf depth}.
+\apiend
+
+\apiitem{DeepData.{\ce sort} (pixel)}
+Sort the samples of the pixel by their Z depth.
+\apiend
+
+\apiitem{DeepData.{\ce merge_overlaps} (pixel)}
+Merge any adjacent samples in the pixel that exactly overlap in $z$
+range. This is only useful if the pixel has previously been split at
+all sample starts and ends, and sorted by depth.
+\apiend
+
+\apiitem{DeepData.{\ce merge_deep_pixels} (pixel, src, srcpixel)}
+Merge the samples of {\cf src}'s pixel into this \DeepData's pixel.
+\apiend
+
+\apiitem{DeepData.{\ce occlusion_cull} (pixel)}
+Eliminate any samples beyond an opaque sample.
+\apiend
 
 
 
@@ -727,15 +778,15 @@ specified subimage or MIP level).
 \end{code}
 \apiend
 
-\apiitem{array ImageInput.{\ce read_image} (type=OpenImageIO.UNKNOWN) \\
-array ImageInput.{\ce read_image} (chbegin, chend, type=OpenImageIO.UNKNOWN)}
+\apiitem{array ImageInput.{\ce read_image} (type=OpenImageIO.FLOAT) \\
+array ImageInput.{\ce read_image} (chbegin, chend, type=OpenImageIO.FLOAT)}
 Read the entire image and return the pixels as an array of
 $\mathit{width} \times \mathit{height} \times \mathit{depth} \times \mathit{nchannels}$
-values (or {\cf None} if an error occurred).  The array will be of the type
-specified by the {\cf TypeDesc} or {\cf BASETYPE} argument, or  if the
-argument is missing or is {\cf TypeDesc(oiio.UNKNOWN)}, it will choose an
-appropriate data type that is the ``smallest'' type that can hold the actual
-types in the file. The call may optionally specify a subset of channels.
+values (or {\cf None} if an error occurred). The array will be of the type
+specified by the {\cf TypeDesc} or {\cf BASETYPE} argument (by default,
+{\cf FLOAT}). If {\cf type} is {\cf OpenImageIO.UNKNOWN}, an
+array of {\cf unsigned char} will be returned containing the raw data in
+its native format. The call may optionally specify a subset of channels.
 
 \noindent Example:
 \begin{code}
@@ -748,13 +799,14 @@ types in the file. The call may optionally specify a subset of channels.
 \end{code}
 \apiend
 
-\apiitem{array ImageInput.{\ce read_scanline} (y, z, type=OpenImageIO.UNKNOWN)}
+\apiitem{array ImageInput.{\ce read_scanline} (y, z, type=OpenImageIO.FLOAT)}
 Read scanline number {\cf y} from depth plane {\cf z} from the open file,
 returning it as an array of $\mathit{width} \times \mathit{nchannels}$
 values (or {\cf None} if an error occurred). The array will be of the type
-specified by the {\cf TypeDesc} or {\cf BASETYPE} argument, or if the
-argument is missing or is {\cf TypeDesc(oiio.UNKNOWN)}, it will choose an
-appropriate data type.
+specified by the {\cf TypeDesc} or {\cf BASETYPE} argument (by default,
+{\cf FLOAT}). If {\cf type} is {\cf OpenImageIO.UNKNOWN}, an
+array of {\cf unsigned char} will be returned containing the raw data in
+its native format.
 
 \noindent Example:
 \begin{code}
@@ -770,14 +822,15 @@ appropriate data type.
 \end{code}
 \apiend
 
-\apiitem{array ImageInput.{\ce read_tile} (x, y, z, type=OpenImageIO.UNKNOWN)}
+\apiitem{array ImageInput.{\ce read_tile} (x, y, z, type=OpenImageIO.FLOAT)}
 Read the tile whose upper left corner is pixel {\cf (x,y,z)} from the open
 file, returning it as an array of
 $\mathit{width} \times \mathit{height} \times \mathit{depth} \times \mathit{nchannels}$
 values (or {\cf None} if an error occurred). The array will be of the type
-specified by the {\cf TypeDesc} or {\cf BASETYPE} argument, or if the
-argument is missing or {\cf TypeDesc(oiio.UNKNOWN)}, it will choose an
-appropriate data type.
+specified by the {\cf TypeDesc} or {\cf BASETYPE} argument (by default,
+{\cf FLOAT}). If {\cf type} is {\cf OpenImageIO.UNKNOWN}, an
+array of {\cf unsigned char} will be returned containing the raw data in
+its native format.
 
 \noindent Example:
 \begin{code}
@@ -796,9 +849,9 @@ appropriate data type.
 \apiend
 
 \apiitem{array ImageInput.{\ce read_scanlines} (ybegin, yend, z, chbegin, chend, \\
-\bigspc\bigspc\spc type=OpenImageIO.UNKNOWN) \\
+\bigspc\bigspc\spc type=OpenImageIO.FLOAT) \\
 array ImageInput.{\ce read_tiles} (xbegin, xend, ybegin, yend, zbegin, zend, \\
-    \bigspc\bigspc\spc chbegin, chend, type=OpenImageIO.UNKNOWN)}
+    \bigspc\bigspc\spc chbegin, chend, type=OpenImageIO.FLOAT)}
 Similar to the C++ routines, these functions read multiple scanlines or 
 tiles at once, which in some cases may be more efficient than reading
 each scanline or tile separately.  Additionally, they allow you to read only
@@ -1549,6 +1602,10 @@ retrieve the error message (and clear it afterwards).
 \end{code}
 \apiend
 
+\apiitem{int ImageBuf.{\ce pixelindex} (x, y, z, check_range=False)}
+Return the index of pixel (x,y,z).
+\apiend
+
 \apiitem{bool ImageBuf.{\ce deep}}
 Will be {\cf True} if the file contains ``deep'' pixel data, or {\cf False}
 for an ordinary images.
@@ -1564,7 +1621,6 @@ Set the number of deep samples for pixel (x,y,z).
 
 \apiitem{ImageBuf.{\ce deep_insert_samples} (x, y, z, samplepos, nsamples) \\
 int ImageBuf.{\ce deep_erase_samples} (x, y, z, samplepos, nsamples)}
-\NEW % 1.7
 Insert or erase \emph{nsamples} samples starting at the given position of
 pixel {\cf (x,y,z)}.
 \apiend
@@ -1716,7 +1772,6 @@ Choosing different seed values will result in a different pattern.
 
 \apiitem{bool ImageBufAlgo.{\ce render_point} (dst, x, y, color=(1,1,1,1))}
 \index{ImageBufAlgo!render_point} \indexapi{render_point}
-\NEW % 1.7
 
 Render a point at pixel $(x,y)$ of {\cf dst}.  The {\cf color} (if supplied)
 is a tuple giving the per-channel colors.
@@ -1733,7 +1788,6 @@ is a tuple giving the per-channel colors.
 \apiitem{bool ImageBufAlgo.{\ce render_line} (dst, x1, y1, x2, y2, \\
 \bigspc\bigspc color=(1,1,1,1), skip_first_point=False)}
 \index{ImageBufAlgo!render_line} \indexapi{render_line}
-\NEW % 1.7
 
 Render a line from pixel $(x_1,y_1)$ to $(x_2,y_2)$ into {\cf dst}.  The
 {\cf color} (if supplied) is a tuple giving the per-channel colors.
@@ -1750,7 +1804,6 @@ Render a line from pixel $(x_1,y_1)$ to $(x_2,y_2)$ into {\cf dst}.  The
 \apiitem{bool ImageBufAlgo.{\ce render_box} (dst, x1, y1, x2, y2, \\
 \bigspc\bigspc color=(1,1,1,1), filled=False)}
 \index{ImageBufAlgo!render_box} \indexapi{render_box}
-\NEW % 1.7
 
 Render a filled or unfilled box with corners at pixels $(x_1,y_1)$ and
 $(x_2,y_2)$ into {\cf dst}.  The {\cf color} (if supplied) is a tuple giving
@@ -1767,11 +1820,15 @@ the per-channel colors.
 
 
 \apiitem{bool ImageBufAlgo.{\ce render_text} (dst, x, y, text, fontsize=16, \\
-  \bigspc\bigspc  fontname="", textcolor=(1,1,1,1))}
+  \bigspc\bigspc  fontname="", textcolor=(1,1,1,1),\\
+  \bigspc\bigspc  alignx="left", aligny="baseline", shadow=0,\\
+  \bigspc\bigspc  roi=ROI.All, nthreads=0}
 \index{ImageBufAlgo!render_text} \indexapi{render_text}
 
 Render antialiased text into {\cf dst}.  The {\cf textcolor} (if supplied)
-is a tuple giving the per-channel colors.
+is a tuple giving the per-channel colors. Choices for {\cf alignx} are
+\qkw{left}, \qkw{right}, and \qkw{center}, and choices for {\cf aligny} are
+\qkw{baseline}, \qkw{top}, \qkw{bottom}, and \qkw{center}.
 
 \smallskip
 \noindent Examples:
@@ -1779,9 +1836,35 @@ is a tuple giving the per-channel colors.
     buf = ImageBuf(ImageSpec (640, 480, 4, oiio.FLOAT))
     ImageBufAlgo.render_text (buf, 50, 100, "Hello, world")
     ImageBufAlgo.render_text (buf, 100, 200, "Go Big Red!",
-                               60, "Arial Bold", (1,0,0,1))
+                              60, "Arial Bold", (1,0,0,1))
 \end{code}
 % \spc \includegraphics[width=2.5in]{figures/text.jpg}
+\apiend
+
+
+\apiitem{ROI ImageBufAlgo.{\ce text_size} (text, fontsize=16, fontname="")}
+\index{ImageBufAlgo!text_size} \indexapi{text_size}
+
+\NEW % 1.8
+Compute the size that will be needed for the text as an ROI and return it.
+The size will not be {\cf defined} if an error occurred (such as not being a
+valid font name).
+
+\smallskip
+\noindent Examples:
+\begin{code}
+    A = ImageBuf(ImageSpec (640, 480, 4, oiio.FLOAT))
+    Aroi = A.roi
+    size = ImageBufAlgo.text_size ("Centered", 40, "Courier New")
+    if size.defined :
+        x = Aroi.xbegin + Aroi.width/2  - (size.xbegin + size.width/2)
+        y = Aroi.ybegin + Aroi.height/2 - (size.ybegin + size.height/2)
+        ImageBufAlgo.render_text (A, x, y, "Centered", 40, "Courier New")
+
+    # Note: this was for illustration. An easier way to do this is:
+    #   render_text (A, x, y, "Centered", 40, "Courier New", alignx="center")
+\end{code}
+% \spc \includegraphics[width=2.5in]{figures/textcentered.jpg}
 \apiend
 
 
@@ -1850,35 +1933,20 @@ the region of interest.
 \apiend
 
 
-\apiitem{bool ImageBufAlgo.{\ce deepen} (dst, src, zvalue=1.0, roi=ROI.All, nthreads=0)}
-\index{ImageBufAlgo!deepen} \indexapi{deepen} \index{deep images}
-
-Convert a flat image to a deep one that has one depth sample per pixel
-(but no depth samples for the pixels corresponding to those in the source
-image that have infinite \qkw{Z} or that had 0 for all color channels and no
-\qkw{Z} channel).
-
-\smallskip
-\noindent Examples:
-\begin{code}
-    Deep = ImageBuf()
-    ImageBufAlgo.deepen (Deep, ImageBuf("az.exr"))
-\end{code}
-\apiend
-
-
-\apiitem{bool ImageBufAlgo.{\ce flatten} (dst, src, roi=ROI.All, nthreads=0)}
-\index{ImageBufAlgo!flatten} \indexapi{flatten} \index{deep images}
-
-Composite the depth samples within each pixel of ``deep'' \ImageBuf\ {\cf
-src} and store the single  resulting value per pixel in ``flat'' \ImageBuf
-{\cf dst}.
+\apiitem{bool ImageBufAlgo.{\ce copy} (dst, src, convert=TypeDesc.UNKNOWN, \\
+        \bigspc roi=ROI.All, nthreads=0)}
+\index{ImageBufAlgo!copy} \indexapi{copy}
+Copy the specified region of pixels of {\cf src} into {\cf dst} at the same
+locations, without changing any existing pixels of {\cf dst} outside the
+region.  If {\cf dst} is not already initialized, it will be set to the same
+size as {\cf roi} (defaulting to all of {\cf src}), optionally with the pixel
+type overridden by {\cf convert} (if it is not {\cf UNKNOWN}).
 
 \smallskip
 \noindent Examples:
 \begin{code}
-    Flat = ImageBuf()
-    ImageBufAlgo.flatten (Flat, ImageBuf("deepalpha.exr"))
+    # Copy A's upper left 200x100 region into B
+    ImageBufAlgo.copy (B, A, ROI(0,200,0,100))
 \end{code}
 \apiend
 
@@ -2272,8 +2340,37 @@ channel (if not supplied, all channels will have weight 1.0).
 \begin{code}
     # Compute luminance via a weighted sum of R,G,B
     # (assuming Rec709 primaries and a linear scale)
+    luma = ImageBuf()
     luma_weights = (.2126, .7152, .0722)
     ImageBufAlgo.channel_sum (luma, ImageBuf("a.exr"), luma_weights)
+\end{code}
+\apiend
+
+
+\apiitem{bool ImageBufAlgo.{\ce color_map} (dst, src, srcchannel, \\
+        nknots, channels, knots, roi=ROI.All, nthreads=0) \\
+bool ImageBufAlgo.{\ce color_map} (dst, src, srcchannel, \\
+        mapname, roi=ROI.All, nthreads=0)}
+\index{ImageBufAlgo!color_map} \indexapi{color_map}
+\NEW % 1.8
+Set pixels of {\cf dst} by applying the color map to the values of {\cf
+src}, using either the channel specified by {\cf srcchannel}, or the
+luminance of {\cf src}'s RGB if {\cf srcchannel} is -1.
+
+In the first variant, the values linearly-interpolated color map are
+given by the tuple {\cf knots[nknots*channels]}.
+
+In the second variant, just the name of a color map is specified. Recognized
+map names include: \qkw{blue-red}, \qkw{spectrum}, and \qkw{heat}. In all
+cases, the implied {\cf channels} is 3.
+
+\smallskip
+\noindent Examples:
+\begin{code}
+    heatmap = ImageBuf()
+    ImageBufAlgo.color_map (heatmap, ImageBuf("a.jpg"), -1, "heat")
+    ImageBufAlgo.color_map (heatmap, ImageBuf("a.jpg"), -1, 3, 3,
+                            (0.25, 0.25, 0.25,  0, 0.5, 0,  1, 0, 0))
 \end{code}
 \apiend
 
@@ -2375,50 +2472,35 @@ $Z$ channels to decide which is in front on a pixel-by-pixel basis.
 \subsection{Image comparison and statistics}
 \label{sec:iba:py:stats}
 
-\begin{comment}   % Not figured out yet
 
-\apiitem{bool ImageBufAlgo.{\ce computePixelStats} (PixelStats \&stats, src, \\
+\apiitem{bool ImageBufAlgo.{\ce computePixelStats} (src, stats, \\
    \bigspc\bigspc  roi=ROI.All, nthreads=0)}
 \index{ImageBufAlgo!computePixelStats} \indexapi{computePixelStats}
 
 Compute statistics about the ROI of the image {\cf src}, storing results
-in {\cf stats} (each of the vectors within {\cf stats} will be
-automatically resized to the number of channels in the image).  A return
-value of {\cf true} indicates success, {\cf false} indicates that it was
+in {\cf stats} (which must refer to an {\cf PixelStats} object).  A return
+value of {\cf True} indicates success, {\cf False} indicates that it was
 not possible to complete the operation.
- The {\cf PixelStats} structure is defined as follows:
-\begin{code}
-struct PixelStats {
-    std::vector<float> min
-    std::vector<float> max
-    std::vector<float> avg
-    std::vector<float> stddev
-    std::vector<imagesize_t> nancount
-    std::vector<imagesize_t> infcount
-    std::vector<imagesize_t> finitecount
-    std::vector<double> sum, sum2  # for intermediate calculation
-}
-\end{code}
+The {\cf PixelStats} structure is defined as contining the following
+data fields: {\cf min}, {\cf max}, {\cf avg}, {\cf stddev},
+{\cf nancount}, {\cf infcount}, {\cf finitecount}, {\cf sum}, {\cf sum2},
+each of which is a \emph{tuple} with one value for each channel of the image.
 
 \smallskip
 \noindent Examples:
 \begin{code}
-    ImageBuf A ("a.exr")
-    ImageBufAlgo.PixelStats stats
-    ImageBufAlgo.computePixelStats (stats, A)
-    for (int c = 0;  c < A.nchannels();  ++c) {
-        print "Channel ", c, ":"
-        print "   min = ", stats.min[c]
-        print "   max = ", stats.max[c]
-        print "   average = ", stats.avg[c]
-        print "   standard deviation  = ", stats.stddev[c]
-        print "   # NaN values    = ", stats.nancount[c]
-        print "   # Inf values    = ", stats.infcount[c]
-        print "   # finite values = ", stats.finitecount[c]
-    }
+    A = ImageBuf("a.exr")
+    stats = OpenImageIO.PixelStats()
+    computePixelStats (A, stats)
+    print "   min = ", stats.min
+    print "   max = ", stats.max
+    print "   average = ", stats.avg
+    print "   standard deviation  = ", stats.stddev
+    print "   # NaN values    = ", stats.nancount
+    print "   # Inf values    = ", stats.infcount
+    print "   # finite values = ", stats.finitecount
 \end{code}
 \apiend
-\end{comment}
 
 
 \apiitem{bool ImageBufAlgo.{\ce compare} (A, B, failthresh, warnthresh, 
@@ -2683,7 +2765,6 @@ a kernel (also an \ImageBuf).
 
 \apiitem{bool ImageBufAlgo.{\ce laplacian} (dst, src, roi=ROI.All, nthreads=0)}
 \index{ImageBufAlgo!laplacian} \indexapi{laplacian}
-\NEW % 1.7
 Replace the given ROI of {\cf dst} with the Laplacian of the corresponding
 part of {\cf src}.
 
@@ -2797,8 +2878,9 @@ of src was < 1, dst will have a pixel color that is a plausible
 \index{ImageBufAlgo!median_filter} \indexapi{median_filter}
 
 
-Replace the given ROI of {\cf dst} with a sharpened version of the
-corresponding region of {\cf src} using the ``unsharp mask'' technique.
+Replace the given ROI of {\cf dst} with the
+${\mathit width} \times {\mathit height}$ median filter of the corresponding
+region of {\cf src} using the ``unsharp mask'' technique.
 
 \smallskip
 \noindent Examples:
@@ -2806,6 +2888,26 @@ corresponding region of {\cf src} using the ``unsharp mask'' technique.
     Noisy = ImageBuf ("tahoe.exr")
     Clean = ImageBuf ()
     ImageBufAlgo.median_filter (Clean, Noisy, 3, 3)
+\end{code}
+\apiend
+
+
+\apiitem{bool ImageBufAlgo.{\ce dilate} (dst, src, width=3, height=-1, \\
+  \bigspc\spc  roi=ROI.All, nthreads=0) \\
+bool ImageBufAlgo.{\ce erode} (dst, src, width=3, height=-1, \\
+  \bigspc\spc  roi=ROI.All, nthreads=0) }
+\index{ImageBufAlgo!dilate} \indexapi{dilate}
+\index{ImageBufAlgo!erode} \indexapi{erode}
+
+Replace the given ROI of {\cf dst} with a dilated or eroded version of the
+corresponding region of {\cf src}.
+
+\smallskip
+\noindent Examples:
+\begin{code}
+    Source = ImageBuf ("source.tif")
+    Dilated = ImageBuf ()
+    ImageBufAlgo.dilate (Dilated, Source, 3, 3)
 \end{code}
 \apiend
 
@@ -2834,9 +2936,7 @@ corresponding region of {\cf src} using the ``unsharp mask'' technique.
 
 \apiitem{bool ImageBufAlgo.{\ce colorconvert} (dst, src, from, to,
   unpremult=False, \\
-  \bigspc\bigspc  roi=ROI.All, nthreads=0) \\
-bool ImageBufAlgo.{\ce colorconvert} (dst, src, from, to,
-  unpremult=False, \\
+  \bigspc\bigspc context_key="", context_value="", \\
   \bigspc\bigspc  colorconfig="", roi=ROI.All, nthreads=0) \\
 }
 \index{ImageBufAlgo!colorconvert} \indexapi{colorconvert}
@@ -2857,10 +2957,6 @@ are supported.
 
 \apiitem{bool ImageBufAlgo.{\ce ociolook} (dst, src, looks, from, to,  \\
   \bigspc\bigspc  inverse=False, unpremult=False, \\
-  \bigspc\bigspc context_key="", context_value="", \\
-  \bigspc\bigspc roi=ROI.All, nthreads=0) \\
- bool ImageBufAlgo.{\ce ociolook} (dst, src, looks, from, to, \\
-  \bigspc\bigspc inverse=False, unpremult=False, \\
   \bigspc\bigspc context_key="", context_value="", colorconfig="", \\
   \bigspc\bigspc roi=ROI.All, nthreads=0)}
 \index{ImageBufAlgo!ociolook} \indexapi{ociolook}
@@ -2881,10 +2977,6 @@ are supported.
 
 
 \apiitem{bool ImageBufAlgo.{\ce ociodisplay} (dst, src, display, view, \\
-  \bigspc\bigspc from=None, looks=None, unpremult=False, \\
-  \bigspc\bigspc context_key="", context_value="", \\
-  \bigspc\bigspc roi=ROI.All, nthreads=0) \\
-bool ImageBufAlgo.{\ce ociodisplay} (dst, src, display, view, \\
   \bigspc\bigspc from=None, looks=None, unpremult=False, \\
   \bigspc\bigspc context_key="", context_value="", colorconfig="", \\
   \bigspc\bigspc roi=ROI.All, nthreads=0)}
@@ -2980,6 +3072,79 @@ Capture a still image from a designated camera.
 \apiend
 
 
+\subsection{Functions specific to deep images}
+
+\apiitem{bool ImageBufAlgo.{\ce deepen} (dst, src, zvalue=1.0, roi=ROI.All, nthreads=0)}
+\index{ImageBufAlgo!deepen} \indexapi{deepen} \index{deep images}
+
+Convert a flat image to a deep one that has one depth sample per pixel
+(but no depth samples for the pixels corresponding to those in the source
+image that have infinite \qkw{Z} or that had 0 for all color channels and no
+\qkw{Z} channel).
+
+\smallskip
+\noindent Examples:
+\begin{code}
+    Deep = ImageBuf()
+    ImageBufAlgo.deepen (Deep, ImageBuf("az.exr"))
+\end{code}
+\apiend
+
+
+\apiitem{bool ImageBufAlgo.{\ce flatten} (dst, src, roi=ROI.All, nthreads=0)}
+\index{ImageBufAlgo!flatten} \indexapi{flatten} \index{deep images}
+
+Composite the depth samples within each pixel of ``deep'' \ImageBuf\ {\cf
+src} and store the single  resulting value per pixel in ``flat'' \ImageBuf
+{\cf dst}.
+
+\smallskip
+\noindent Examples:
+\begin{code}
+    Flat = ImageBuf()
+    ImageBufAlgo.flatten (Flat, ImageBuf("deepalpha.exr"))
+\end{code}
+\apiend
+
+\apiitem{bool ImageBufAlgo.{\ce deep_merge} (dst, A, B, occlusion_cull, roi=ROI.All, nthreads=0)}
+\index{ImageBufAlgo!deep_merge} \indexapi{deep_merge} \index{deep images}
+
+Merge the samples of two \emph{deep} images {\cf A} and {\cf B} into deep
+result {\cf dst}. If {\cf occlusion_cull} is {\cf True}, samples beyond
+the first opaque sample will be discarded, otherwise they will be kept.
+
+\smallskip
+\noindent Examples:
+\begin{code}
+    DeepA = ImageBuf("hardsurf.exr")
+    DeepB = ImageBuf("volume.exr")
+    Merged = ImageBuf()
+    ImageBufAlgo.deep_merge (Merged, DeepA, DeepB)
+\end{code}
+\apiend
+
+\subsection*{Other ImageBufAlgo methods that understand deep images}
+
+In addition to the previously described methods that are specific to
+deep images, the following \ImageBufAlgo methods (described in their
+respective sections) work with deep inputs:
+
+\medskip
+
+\noindent
+{\cf ImageBufAlgo.add} \\
+{\cf ImageBufAlgo.channels} \\
+{\cf ImageBufAlgo.compare} \\
+{\cf ImageBufAlgo.computePixelStats} \\
+{\cf ImageBufAlgo.crop} \\
+{\cf ImageBufAlgo.div} \\
+{\cf ImageBufAlgo.fixNonFinite} \\
+{\cf ImageBufAlgo.mul} \\
+{\cf ImageBufAlgo.nonzero_region} \\
+{\cf ImageBufAlgo.resample} \\
+{\cf ImageBufAlgo.sub} \\
+
+
 \newpage
 \section{Miscellaneous Utilities}
 \label{sec:pythonmiscapi}
@@ -3016,7 +3181,6 @@ recognized attribute.
 {\ce get_int_attribute} (name, defaultval=0) \\
 {\ce get_float_attribute} (name, defaultval=0.0) \\
 {\ce get_string_attribute} (name, defaultval="")}
-\NEW % 1.7
 Retrieves an attribute value from the named set of global OIIO options. (See
 Section~\ref{sec:globalattribute}.) The {\cf getattribute()} function
 returns the value regardless of type, or {\cf None} if the attribute does

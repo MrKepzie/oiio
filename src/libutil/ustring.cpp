@@ -30,11 +30,11 @@
 
 #include <string>
 
-#include "OpenImageIO/export.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/ustring.h"
+#include <OpenImageIO/export.h>
+#include <OpenImageIO/thread.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/ustring.h>
 
 OIIO_NAMESPACE_BEGIN
 
@@ -164,6 +164,9 @@ private:
     }
 
     char* pool_alloc(size_t len) {
+        // round up to nearest multiple of pointer size to guarentee proper alignment of TableRep objects
+        len = (len + alignof(ustring::TableRep) - 1) & ~(alignof(ustring::TableRep) - 1);
+
         if (len >= POOL_SIZE) {
             memory_usage += len;
             return (char*) malloc(len); // no need to try and use the pool

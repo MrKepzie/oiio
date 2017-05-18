@@ -41,21 +41,21 @@
 #include <OpenEXR/ImathVec.h>
 #include <OpenEXR/half.h>
 
-#include "OpenImageIO/argparse.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/ustring.h"
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/imagebufalgo.h"
-#include "OpenImageIO/imagebufalgo_util.h"
-#include "OpenImageIO/texture.h"
-#include "OpenImageIO/fmath.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/sysutil.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/timer.h"
+#include <OpenImageIO/argparse.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/ustring.h>
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
+#include <OpenImageIO/imagebufalgo_util.h>
+#include <OpenImageIO/texture.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/sysutil.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/timer.h>
 #include "../libtexture/imagecache_pvt.h"
 
-OIIO_NAMESPACE_USING
+using namespace OIIO;
 
 #if OIIO_CPLUSPLUS_VERSION >= 11
 using OIIO::_1;
@@ -99,13 +99,16 @@ static Imath::V3f texoffset (0,0,0);
 static bool nountiled = false;
 static bool nounmipped = false;
 static bool gray_to_rgb = false;
+static bool flip_t = false;
 static bool resetstats = false;
 static bool testhash = false;
 static bool wedge = false;
 static int ntrials = 1;
 static int testicwrite = 0;
 static bool test_derivs = false;
+static bool test_statquery = false;
 static Imath::M33f xform;
+static mutex error_mutex;
 void *dummyptr;
 
 typedef void (*Mapping2D)(int,int,float&,float&,float&,float&,float&,float&);
@@ -117,7 +120,7 @@ static int
 parse_files (int argc, const char *argv[])
 {
     for (int i = 0;  i < argc;  i++)
-        filenames.push_back (ustring(argv[i]));
+        filenames.emplace_back(argv[i]);
     return 0;
 }
 
@@ -177,6 +180,7 @@ getargs (int argc, const char *argv[])
                   "--nountiled", &nountiled, "Reject untiled images",
                   "--nounmipped", &nounmipped, "Reject unmipped images",
                   "--graytorgb", &gray_to_rgb, "Convert gratscale textures to RGB",
+                  "--flipt", &flip_t, "Flip direction of t coordinate",
                   "--derivs", &test_derivs, "Test returning derivatives of texture lookups",
                   "--resetstats", &resetstats, "Print and reset statistics on each iteration",
                   "--testhash", &testhash, "Test the tile hashing function",
@@ -184,6 +188,7 @@ getargs (int argc, const char *argv[])
                   "--trials %d", &ntrials, "Number of trials for timings",
                   "--wedge", &wedge, "Wedge test",
                   "--testicwrite %d", &testicwrite, "Test ImageCache write ability (1=seeded, 2=generated)",
+                  "--teststatquery", &test_statquery, "Test queries of statistics",
                   NULL);
     if (ap.parse (argc, argv) < 0) {
         std::cerr << ap.geterror() << std::endl;
@@ -524,8 +529,10 @@ plain_tex_region (ImageBuf &image, ustring filename, Mapping2D mapping,
                                   nchannels, result, dresultds, dresultdt);
         if (! ok) {
             std::string e = texsys->geterror ();
-            if (! e.empty())
+            if (! e.empty()) {
+                lock_guard lock (error_mutex);
                 std::cerr << "ERROR: " << e << "\n";
+            }
         }
 
         // Save filtered pixels back to the image.
@@ -569,11 +576,10 @@ test_plain_texture (Mapping2D mapping)
             std::cout << "iter " << iter << " file " << filename << "\n";
         }
 
-        OIIO::ImageBufAlgo::parallel_image (OIIO::bind(plain_tex_region, OIIO::ref(image), filename, mapping,
-                                                  test_derivs ? &image_ds : NULL,
-                                                  test_derivs ? &image_dt : NULL, _1),
-                                      get_roi(image.spec()), nthreads);
-
+        ImageBufAlgo::parallel_image (get_roi(image.spec()), nthreads,
+                std::bind(plain_tex_region, std::ref(image), filename, mapping,
+                          test_derivs ? &image_ds : NULL,
+                          test_derivs ? &image_dt : NULL, _1));
         if (resetstats) {
             std::cout << texsys->getstats(2) << "\n";
             texsys->reset_stats ();
@@ -622,8 +628,10 @@ tex3d_region (ImageBuf &image, ustring filename, Mapping3D mapping,
                                      result, dresultds, dresultdt, dresultdr);
         if (! ok) {
             std::string e = texsys->geterror ();
-            if (! e.empty())
+            if (! e.empty()) {
+                lock_guard lock (error_mutex);
                 std::cerr << "ERROR: " << e << "\n";
+            }
         }
 
         // Save filtered pixels back to the image.
@@ -650,9 +658,8 @@ test_texture3d (ustring filename, Mapping3D mapping)
         // Trick: switch to second texture, if given, for second iteration
         if (iter && filenames.size() > 1)
             filename = filenames[1];
-
-        OIIO::ImageBufAlgo::parallel_image (OIIO::bind(tex3d_region, OIIO::ref(image), filename, mapping, _1),
-                                      get_roi(image.spec()), nthreads);
+        ImageBufAlgo::parallel_image (get_roi(image.spec()), nthreads,
+                std::bind(tex3d_region, std::ref(image), filename, mapping, _1));
     }
     
     if (! image.write (output_filename)) 
@@ -684,35 +691,42 @@ test_getimagespec_gettexels (ustring filename)
     if (! texsys->get_imagespec (filename, 0, spec)) {
         std::cerr << "Could not get spec for " << filename << "\n";
         std::string e = texsys->geterror ();
-        if (! e.empty())
+        if (! e.empty()) {
+            lock_guard lock (error_mutex);
             std::cerr << "ERROR: " << e << "\n";
+        }
         return;
     }
 
     if (! test_gettexels)
         return;
 
-    int w = spec.width / std::max(1,2<<miplevel);
-    int h = spec.height / std::max(1,2<<miplevel);
+    int w = std::min (spec.width, output_xres);
+    int h = std::min (spec.height, output_yres);
     int nchannels = nchannels_override ? nchannels_override : spec.nchannels;
     ImageSpec postagespec (w, h, nchannels, TypeDesc::FLOAT);
     ImageBuf buf (postagespec);
     TextureOpt opt;
     initialize_opt (opt, nchannels);
     std::vector<float> tmp (w*h*nchannels);
-    bool ok = texsys->get_texels (filename, opt, miplevel,
-                                  spec.x+w/2, spec.x+w/2+w,
-                                  spec.y+h/2, spec.y+h/2+h,
-                                  0, 1, 0, nchannels,
-                                  postagespec.format, &tmp[0]);
-    if (! ok)
-        std::cerr << texsys->geterror() << "\n";
+    int x = spec.x + spec.width/2 - w/2;
+    int y = spec.y + spec.height/2 - h/2;
+    for (int i = 0; i < iters; ++i) {
+        bool ok = texsys->get_texels (filename, opt, miplevel,
+                                      x, x+w, y, y+h, 0, 1, 0, nchannels,
+                                      postagespec.format, &tmp[0]);
+        if (! ok)
+            std::cerr << texsys->geterror() << "\n";
+    }
     for (int y = 0;  y < h;  ++y)
         for (int x = 0;  x < w;  ++x) {
             imagesize_t texoffset = (y*w + x) * spec.nchannels;
             buf.setpixel (x, y, &tmp[texoffset]);
         }
-    buf.write ("postage.exr");
+    TypeDesc fmt (dataformatname);
+    if (fmt != TypeDesc::UNKNOWN)
+        buf.set_write_format (fmt);
+    buf.write (output_filename);
 }
 
 
@@ -930,6 +944,7 @@ do_tex_thread_workout (int iterations, int mythread)
                                   result, dresultds, dresultdt);
         }
         if (! ok) {
+            lock_guard lock (error_mutex);
             std::cerr << "Unexpected error: " << texsys->geterror() << "\n";
             return;
         }
@@ -956,7 +971,7 @@ launch_tex_threads (int numthreads, int iterations)
     texsys->invalidate_all (true);
     OIIO::thread_group threads;
     for (int i = 0;  i < numthreads;  ++i) {
-        threads.create_thread (OIIO::bind(do_tex_thread_workout,iterations,i));
+        threads.create_thread (std::bind(do_tex_thread_workout,iterations,i));
     }
     ASSERT ((int)threads.size() == numthreads);
     threads.join_all ();
@@ -1060,8 +1075,10 @@ test_icwrite (int testicwrite)
                     }
                 bool ok = ic->add_tile (filename, 0, 0, tx, ty, 0, 0, -1,
                                         TypeDesc::FLOAT, &tile[0]);
-                if (! ok)
+                if (! ok) {
+                    lock_guard lock (error_mutex);
                     std::cout << "ic->add_tile error: " << ic->geterror() << "\n";
+                }
                 ASSERT (ok);
             }
         }
@@ -1097,6 +1114,7 @@ main (int argc, const char *argv[])
     if (nounmipped)
         texsys->attribute ("accept_unmipped", 0);
     texsys->attribute ("gray_to_rgb", gray_to_rgb);
+    texsys->attribute ("flip_t", flip_t);
 
     if (test_construction) {
         Timer t;
@@ -1120,11 +1138,15 @@ main (int argc, const char *argv[])
     }
 
     if (test_getimagespec) {
-        Timer t;
         ImageSpec spec;
         for (int i = 0;  i < iters;  ++i) {
             texsys->get_imagespec (filenames[0], 0, spec);
         }
+        iters = 0;
+    }
+
+    if (test_gettexels) {
+        test_getimagespec_gettexels (filenames[0]);
         iters = 0;
     }
 
@@ -1161,7 +1183,7 @@ main (int argc, const char *argv[])
             int nt = wedge ? threadcounts[i] : nthreads;
             int its = iters>1 ? (std::max (1, iters/nt)) : iterations; // / nt;
             double range;
-            double t = time_trial (OIIO::bind(launch_tex_threads,nt,its),
+            double t = time_trial (std::bind(launch_tex_threads,nt,its),
                                    ntrials, &range);
             if (nt == 1)
                 single_thread_time = (float)t;
@@ -1179,6 +1201,7 @@ main (int argc, const char *argv[])
         const char *texturetype = "Plain Texture";
         texsys->get_texture_info (filename, 0, ustring("texturetype"),
                                   TypeDesc::STRING, &texturetype);
+        Timer timer;
         if (! strcmp (texturetype, "Plain Texture")) {
             if (nowarp)
                 test_plain_texture (map_default);
@@ -1202,6 +1225,39 @@ main (int argc, const char *argv[])
             test_environment (filename);
         }
         test_getimagespec_gettexels (filename);
+        std::cout << "Time: " << Strutil::timeintervalformat (timer()) << "\n";
+    }
+
+    if (test_statquery) {
+        std::cout << "Testing statistics queries:\n";
+        int total_files = 0;
+        texsys->getattribute ("total_files", total_files);
+        std::cout << "  Total files: " << total_files << "\n";
+        std::vector<ustring> all_filenames (total_files);
+        std::cout << TypeDesc(TypeDesc::STRING,total_files) << "\n";
+        texsys->getattribute ("all_filenames", TypeDesc(TypeDesc::STRING,total_files), &all_filenames[0]);
+        for (int i = 0; i < total_files; ++i) {
+            int timesopened = 0;
+            int64_t bytesread = 0;
+            float iotime = 0.0f;
+            int64_t data_size = 0, file_size = 0;
+            texsys->get_texture_info (all_filenames[i], 0, ustring("stat:timesopened"),
+                                      TypeDesc::INT, &timesopened);
+            texsys->get_texture_info (all_filenames[i], 0, ustring("stat:bytesread"),
+                                      TypeDesc::INT64, &bytesread);
+            texsys->get_texture_info (all_filenames[i], 0, ustring("stat:iotime"),
+                                      TypeDesc::FLOAT, &iotime);
+            texsys->get_texture_info (all_filenames[i], 0, ustring("stat:image_size"),
+                                      TypeDesc::INT64, &data_size);
+            texsys->get_texture_info (all_filenames[i], 0, ustring("stat:file_size"),
+                                      TypeDesc::INT64, &file_size);
+            std::cout << Strutil::format ("  %d: %s  opens=%d, read=%s, time=%s, data=%s, file=%s\n",
+                                          i, all_filenames[i], timesopened,
+                                          Strutil::memformat(bytesread),
+                                          Strutil::timeintervalformat(iotime,2),
+                                          Strutil::memformat(data_size),
+                                          Strutil::memformat(file_size));
+        }
     }
 
     std::cout << "Memory use: "

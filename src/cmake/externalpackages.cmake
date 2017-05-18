@@ -4,6 +4,7 @@
 # When not in VERBOSE mode, try to make things as quiet as possible
 if (NOT VERBOSE)
     set (Boost_FIND_QUIETLY true)
+    set (DCMTK_FIND_QUIETLY true)
     set (FFmpeg_FIND_QUIETLY true)
     set (Field3D_FIND_QUIETLY true)
     set (Freetype_FIND_QUIETLY true)
@@ -33,53 +34,44 @@ if (NOT VERBOSE)
 endif ()
 
 
-setup_path (THIRD_PARTY_TOOLS_HOME
-            "unknown"
-            "Location of third party libraries in the external project")
 
-# Add all third party tool directories to the include and library paths so
-# that they'll be correctly found by the various FIND_PACKAGE() invocations.
-if (THIRD_PARTY_TOOLS_HOME AND EXISTS "${THIRD_PARTY_TOOLS_HOME}")
-    set (CMAKE_INCLUDE_PATH "${THIRD_PARTY_TOOLS_HOME}/include" "${CMAKE_INCLUDE_PATH}")
-    # Detect third party tools which have been successfully built using the
-    # lock files which are placed there by the external project Makefile.
-    file (GLOB _external_dir_lockfiles "${THIRD_PARTY_TOOLS_HOME}/*.d")
-    foreach (_dir_lockfile ${_external_dir_lockfiles})
-        # Grab the tool directory_name.d
-        get_filename_component (_ext_dirname ${_dir_lockfile} NAME)
-        # Strip off the .d extension
-        string (REGEX REPLACE "\\.d$" "" _ext_dirname ${_ext_dirname})
-        set (CMAKE_INCLUDE_PATH "${THIRD_PARTY_TOOLS_HOME}/include/${_ext_dirname}" ${CMAKE_INCLUDE_PATH})
-        set (CMAKE_LIBRARY_PATH "${THIRD_PARTY_TOOLS_HOME}/lib/${_ext_dirname}" ${CMAKE_LIBRARY_PATH})
-    endforeach ()
+###########################################################################
+# TIFF
+if (NOT TIFF_LIBRARIES OR NOT TIFF_INCLUDE_DIR)
+    find_package (TIFF REQUIRED)
+    include_directories (${TIFF_INCLUDE_DIR})
+else ()
+    message (STATUS "Custom TIFF_LIBRARIES ${TIFF_LIBRARIES}")
+    message (STATUS "Custom TIFF_INCLUDE_DIR ${TIFF_INCLUDE_DIR}")
 endif ()
 
 
-setup_string (SPECIAL_COMPILE_FLAGS ""
-               "Custom compilation flags")
-if (SPECIAL_COMPILE_FLAGS)
-    add_definitions (${SPECIAL_COMPILE_FLAGS})
-endif ()
+###########################################################################
+# Several packages need Zlib
+find_package (ZLIB REQUIRED)
+include_directories (${ZLIB_INCLUDE_DIR})
 
+
+###########################################################################
+# PNG
+find_package (PNG REQUIRED)
 
 
 ###########################################################################
 # IlmBase & OpenEXR setup
 
-if (NOT OPENEXR_FOUND)
-    find_package (OpenEXR REQUIRED)
-endif ()
-
-include_directories ("${OPENEXR_INCLUDE_DIR}")
-
+find_package (OpenEXR REQUIRED)
+#OpenEXR 2.2 still has problems with importing ImathInt64.h unqualified
+#thus need for ilmbase/OpenEXR
+include_directories ("${OPENEXR_INCLUDE_DIR}"
+                     "${ILMBASE_INCLUDE_DIR}"
+                     "${ILMBASE_INCLUDE_DIR}/OpenEXR")
 if (${OPENEXR_VERSION} VERSION_LESS 2.0.0)
     # OpenEXR 1.x had weird #include dirctives, this is also necessary:
     include_directories ("${OPENEXR_INCLUDE_DIR}/OpenEXR")
 else ()
     add_definitions (-DUSE_OPENEXR_VERSION2=1)
 endif ()
-
-
 if (NOT OpenEXR_FIND_QUIETLY)
     message (STATUS "OPENEXR_INCLUDE_DIR = ${OPENEXR_INCLUDE_DIR}")
     message (STATUS "OPENEXR_LIBRARIES = ${OPENEXR_LIBRARIES}")
@@ -98,10 +90,9 @@ if (NOT Boost_FIND_QUIETLY)
 endif ()
 
 if (NOT DEFINED Boost_ADDITIONAL_VERSIONS)
-  set (Boost_ADDITIONAL_VERSIONS "1.60" "1.59" "1.58" "1.57" "1.56"
-                                 "1.55" "1.54" "1.53" "1.52" "1.51" "1.50"
-                                 "1.49" "1.48" "1.47" "1.46" "1.45" "1.44"
-                                 "1.43" "1.43.0" "1.42" "1.42.0")
+  set (Boost_ADDITIONAL_VERSIONS "1.63" "1.62" "1.61" "1.60"
+                                 "1.59" "1.58" "1.57" "1.56" "1.55"
+                                 "1.54" "1.53")
 endif ()
 if (LINKSTATIC)
     set (Boost_USE_STATIC_LIBS   ON)
@@ -112,51 +103,53 @@ if (BOOST_CUSTOM)
     # N.B. For a custom version, the caller had better set up the variables
     # Boost_VERSION, Boost_INCLUDE_DIRS, Boost_LIBRARY_DIRS, Boost_LIBRARIES.
 else ()
-    set (Boost_COMPONENTS filesystem regex system thread)
-    find_package (Boost 1.42 REQUIRED
-                  COMPONENTS ${Boost_COMPONENTS}
-                 )
+    set (Boost_COMPONENTS filesystem system thread)
+    if (NOT USE_STD_REGEX)
+        list (APPEND Boost_COMPONENTS regex)
+    endif ()
+    find_package (Boost 1.53 REQUIRED
+                  COMPONENTS ${Boost_COMPONENTS})
 
     # Try to figure out if this boost distro has Boost::python.  If we
     # include python in the component list above, cmake will abort if
     # it's not found.  So we resort to checking for the boost_python
     # library's existance to get a soft failure.
-    find_library (oiio_boost_python_lib boost_python
+    find_library (my_boost_python_lib boost_python
                   PATHS ${Boost_LIBRARY_DIRS} NO_DEFAULT_PATH)
-    mark_as_advanced (oiio_boost_python_lib)
-    if (NOT oiio_boost_python_lib AND Boost_SYSTEM_LIBRARY_RELEASE)
-        get_filename_component (oiio_boost_PYTHON_rel
+    mark_as_advanced (my_boost_python_lib)
+    if (NOT my_boost_python_lib AND Boost_SYSTEM_LIBRARY_RELEASE)
+        get_filename_component (my_boost_PYTHON_rel
                                 ${Boost_SYSTEM_LIBRARY_RELEASE} NAME
                                )
         string (REGEX REPLACE "^(lib)?(.+)_system(.+)$" "\\2_python\\3"
-                oiio_boost_PYTHON_rel ${oiio_boost_PYTHON_rel}
+                my_boost_PYTHON_rel ${my_boost_PYTHON_rel}
                )
-        find_library (oiio_boost_PYTHON_LIBRARY_RELEASE
-                      NAMES ${oiio_boost_PYTHON_rel} lib${oiio_boost_PYTHON_rel}
+        find_library (my_boost_PYTHON_LIBRARY_RELEASE
+                      NAMES ${my_boost_PYTHON_rel} lib${my_boost_PYTHON_rel}
                       HINTS ${Boost_LIBRARY_DIRS}
                       NO_DEFAULT_PATH
                      )
-        mark_as_advanced (oiio_boost_PYTHON_LIBRARY_RELEASE)
+        mark_as_advanced (my_boost_PYTHON_LIBRARY_RELEASE)
     endif ()
-    if (NOT oiio_boost_python_lib AND Boost_SYSTEM_LIBRARY_DEBUG)
-        get_filename_component (oiio_boost_PYTHON_dbg
+    if (NOT my_boost_python_lib AND Boost_SYSTEM_LIBRARY_DEBUG)
+        get_filename_component (my_boost_PYTHON_dbg
                                 ${Boost_SYSTEM_LIBRARY_DEBUG} NAME
                                )
         string (REGEX REPLACE "^(lib)?(.+)_system(.+)$" "\\2_python\\3"
-                oiio_boost_PYTHON_dbg ${oiio_boost_PYTHON_dbg}
+                my_boost_PYTHON_dbg ${my_boost_PYTHON_dbg}
                )
-        find_library (oiio_boost_PYTHON_LIBRARY_DEBUG
-                      NAMES ${oiio_boost_PYTHON_dbg} lib${oiio_boost_PYTHON_dbg}
+        find_library (my_boost_PYTHON_LIBRARY_DEBUG
+                      NAMES ${my_boost_PYTHON_dbg} lib${my_boost_PYTHON_dbg}
                       HINTS ${Boost_LIBRARY_DIRS}
                       NO_DEFAULT_PATH
                      )
-        mark_as_advanced (oiio_boost_PYTHON_LIBRARY_DEBUG)
+        mark_as_advanced (my_boost_PYTHON_LIBRARY_DEBUG)
     endif ()
-    if (oiio_boost_python_lib OR
-        oiio_boost_PYTHON_LIBRARY_RELEASE OR oiio_boost_PYTHON_LIBRARY_DEBUG)
-        set (oiio_boost_PYTHON_FOUND ON)
+    if (my_boost_python_lib OR
+        my_boost_PYTHON_LIBRARY_RELEASE OR my_boost_PYTHON_LIBRARY_DEBUG)
+        set (boost_PYTHON_FOUND ON)
     else ()
-        set (oiio_boost_PYTHON_FOUND OFF)
+        set (boost_PYTHON_FOUND OFF)
     endif ()
 endif ()
 
@@ -172,9 +165,9 @@ if (NOT Boost_FIND_QUIETLY)
     message (STATUS "Boost include dirs ${Boost_INCLUDE_DIRS}")
     message (STATUS "Boost library dirs ${Boost_LIBRARY_DIRS}")
     message (STATUS "Boost libraries    ${Boost_LIBRARIES}")
-    message (STATUS "Boost python found ${oiio_boost_PYTHON_FOUND}")
+    message (STATUS "Boost python found ${boost_PYTHON_FOUND}")
 endif ()
-if (NOT oiio_boost_PYTHON_FOUND)
+if (NOT boost_PYTHON_FOUND)
     # If Boost python components were not found, turn off all python support.
     message (STATUS "Boost python support not found -- will not build python components!")
     if (APPLE AND USE_PYTHON)
@@ -216,17 +209,27 @@ if (USE_OCIO)
     endif()
 
     find_package (OpenColorIO)
-    FindOpenColorIO ()
 
     if (OCIO_FOUND)
-        if (NOT OpenColorIO_FIND_QUIETLY)
-            message (STATUS "OpenColorIO enabled")
-            message(STATUS "OCIO_INCLUDES: ${OCIO_INCLUDES}")
-        endif ()
         include_directories (${OCIO_INCLUDES})
         add_definitions ("-DUSE_OCIO=1")
     else ()
         message (STATUS "Skipping OpenColorIO support")
+    endif ()
+
+    if (LINKSTATIC)
+        find_library (TINYXML_LIBRARY NAMES tinyxml)
+        if (TINYXML_LIBRARY)
+            set (OCIO_LIBRARIES ${OCIO_LIBRARIES} ${TINYXML_LIBRARY})
+        endif ()
+        find_library (YAML_LIBRARY NAMES yaml-cpp)
+        if (YAML_LIBRARY)
+            set (OCIO_LIBRARIES ${OCIO_LIBRARIES} ${YAML_LIBRARY})
+        endif ()
+        find_library (LCMS2_LIBRARY NAMES lcms2)
+        if (LCMS2_LIBRARY)
+            set (OCIO_LIBRARIES ${OCIO_LIBRARIES} ${LCMS2_LIBRARY})
+        endif ()
     endif ()
 else ()
     message (STATUS "OpenColorIO disabled")
@@ -286,6 +289,14 @@ endif (USE_OPENGL)
 
 
 ###########################################################################
+# BZIP2 - used by ffmped and freetype
+find_package (BZip2)   # Used by ffmpeg
+if (NOT BZIP2_FOUND)
+    set (BZIP2_LIBRARIES "")
+endif ()
+
+
+###########################################################################
 # FFmpeg
 
 if (USE_FFMPEG)
@@ -319,7 +330,7 @@ if (USE_FIELD3D)
     else ()
         find_library (HDF5_LIBRARIES
                       NAMES hdf5
-                      PATHS "${THIRD_PARTY_TOOLS_HOME}/lib/"
+                      PATHS
                       /usr/local/lib
                       /opt/local/lib
                      )
@@ -340,15 +351,13 @@ if (USE_FIELD3D AND HDF5_FOUND)
         set (FIELD3D_INCLUDES "${FIELD3D_HOME}/include")
     else ()
         find_path (FIELD3D_INCLUDES Field3D/Field.h
-                   "${THIRD_PARTY_TOOLS}/include"
                    "${PROJECT_SOURCE_DIR}/src/include"
                    "${FIELD3D_HOME}/include"
                   )
     endif ()
     find_library (FIELD3D_LIBRARY
                   NAMES Field3D
-                  PATHS "${THIRD_PARTY_TOOLS_HOME}/lib/"
-                        "${FIELD3D_HOME}/lib"
+                  PATHS "${FIELD3D_HOME}/lib"
                  )
     if (FIELD3D_INCLUDES AND FIELD3D_LIBRARY)
         set (FIELD3D_FOUND TRUE)
@@ -371,11 +380,31 @@ endif ()
 # end Field3d setup
 ###########################################################################
 
+
+###########################################################################
+# JPEG
+
+if (USE_JPEGTURBO)
+    find_package (JPEGTurbo)
+endif ()
+if (JPEG_FOUND)
+    add_definitions ("-DUSE_JPEG_TURBO=1")
+else ()
+    # Try to find the non-turbo version
+    find_package (JPEG REQUIRED)
+endif ()
+include_directories (${JPEG_INCLUDE_DIR})
+
+# end JPEG
+###########################################################################
+
+
+###########################################################################
 # OpenJpeg
 if (USE_OPENJPEG)
     find_package (OpenJpeg)
 endif()
-# end OpenJpeg setup_path
+# end OpenJpeg setup
 ###########################################################################
 
 
@@ -408,6 +437,12 @@ if (USE_LIBRAW)
         set (LIBRAW_FOUND FALSE)
         message (STATUS "LibRaw not found!")
     endif()
+
+    if (LINKSTATIC)
+        find_package (Jasper)
+        find_library (LCMS2_LIBRARIES NAMES lcms2)
+        set (LibRaw_r_LIBRARIES ${LibRaw_r_LIBRARIES} ${JASPER_LIBRARIES} ${LCMS2_LIBRARIES})
+    endif ()
 else ()
     message (STATUS "Not using LibRaw")
 endif()
@@ -423,14 +458,11 @@ if (NOT WEBP_FIND_QUIETLY)
     message (STATUS "WEBP_HOME=${WEBP_HOME}")
 endif ()
 find_path (WEBP_INCLUDE_DIR webp/encode.h
-           "${THIRD_PARTY_TOOLS}/include"
            "${PROJECT_SOURCE_DIR}/src/include"
            "${WEBP_HOME}")
 find_library (WEBP_LIBRARY
               NAMES webp
-              PATHS "${THIRD_PARTY_TOOLS_HOME}/lib/"
-              "${WEBP_HOME}"
-             )
+              PATHS "${WEBP_HOME}")
 if (WEBP_INCLUDE_DIR AND WEBP_LIBRARY)
     set (WEBP_FOUND TRUE)
     if (NOT WEBP_FIND_QUIETLY)
@@ -461,39 +493,10 @@ endif()
 # OpenCV setup
 
 if (USE_OPENCV)
-    find_path (OpenCV_INCLUDE_DIR opencv/cv.h
-               "${THIRD_PARTY_TOOLS}/include"
-               "${PROJECT_SOURCE_DIR}/include"
-               "${OpenCV_HOME}/include"
-               /usr/local/include
-               /opt/local/include
-               )
-    find_library (OpenCV_LIBS
-                  NAMES opencv_core
-                  PATHS "${THIRD_PARTY_TOOLS_HOME}/lib/"
-                        "${PROJECT_SOURCE_DIR}/lib"
-                        "${OpenCV_HOME}/lib"
-                        /usr/local/lib
-                        /opt/local/lib
-                 )
-    find_library (OpenCV_LIBS_highgui
-                  NAMES opencv_highgui
-                  PATHS "${THIRD_PARTY_TOOLS_HOME}/lib/"
-                        "${PROJECT_SOURCE_DIR}/lib"
-                        "${OpenCV_HOME}/lib"
-                        /usr/local/lib
-                        /opt/local/lib
-                 )
-    set (OpenCV_LIBS "${OpenCV_LIBS} ${OpenCV_LIBS_highgui}")
-    if (OpenCV_INCLUDE_DIR AND OpenCV_LIBS)
-        set (OpenCV_FOUND TRUE)
+    find_package (OpenCV)
+    if (OpenCV_FOUND)
         add_definitions ("-DUSE_OPENCV")
-        if (NOT OpenCV_FIND_QUIETLY)
-            message (STATUS "OpenCV includes = ${OpenCV_INCLUDE_DIR} ")
-            message (STATUS "OpenCV libs = ${OpenCV_LIBS} ")
-        endif ()
     else ()
-        set (OpenCV_FOUND FALSE)
         message (STATUS "OpenCV library not found")
     endif ()
 else ()
@@ -562,19 +565,24 @@ endif()
 # PTex
 if (USE_PTEX)
     find_package (PTex)
-    if (PTEX_FOUND)
-        if (VERBOSE)
-            message (STATUS "PTex include ${PTEX_INCLUDE_DIR}")
-            message (STATUS "PTex library ${PTEX_LIBRARY}")
-        endif ()
-    else ()
-        if (VERBOSE)
-            message (STATUS "PTex not found externally, using embedded source")
-        endif ()
-        set (PTEX_LIBRARY "")
+    if (NOT PTEX_FOUND)
         set (PTEX_INCLUDE_DIR "")
+        set (PTEX_LIBRARIES "")
     endif ()
 endif()
 # end PTEX setup
+###########################################################################
+
+
+###########################################################################
+# DCMTK
+if (USE_DICOM)
+    find_package (DCMTK)
+    if (NOT DCMTK_FOUND)
+        set (DCMTK_INCLUDE_DIR "")
+        set (DCMTK_LIBRARIES "")
+    endif ()
+endif()
+# end DCMTK setup
 ###########################################################################
 

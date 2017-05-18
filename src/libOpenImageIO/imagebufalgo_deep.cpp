@@ -35,11 +35,12 @@
 #include <iostream>
 #include <stdexcept>
 
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/imagebufalgo.h"
-#include "OpenImageIO/imagebufalgo_util.h"
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/thread.h"
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
+#include <OpenImageIO/imagebufalgo_util.h>
+#include <OpenImageIO/deepdata.h>
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/thread.h>
 
 
 OIIO_NAMESPACE_BEGIN
@@ -88,18 +89,8 @@ static bool
 flatten_ (ImageBuf &dst, const ImageBuf &src, 
           ROI roi, int nthreads)
 {
-    if (nthreads != 1 && roi.npixels() >= 1000) {
-        // Possible multiple thread case -- recurse via parallel_image
-        ImageBufAlgo::parallel_image (
-            OIIO::bind(flatten_<DSTTYPE>, OIIO::ref(dst), OIIO::cref(src),
-                        _1 /*roi*/, 1 /*nthreads*/),
-            roi, nthreads);
-        return true;
-    }
-
     const ImageSpec &srcspec (src.spec());
     int nc = srcspec.nchannels;
-
     int alpha_channel, AR_channel, AG_channel, AB_channel;
     int R_channel, G_channel, B_channel;
     int Z_channel, Zback_channel;
@@ -110,48 +101,50 @@ flatten_ (ImageBuf &dst, const ImageBuf &src,
         dst.error ("No alpha channel could be identified");
         return false;
     }
-    ASSERT (alpha_channel >= 0 ||
-            (AR_channel >= 0 && AG_channel >= 0 && AB_channel >= 0));
-    float *val = ALLOCA (float, nc);
-    float &ARval (AR_channel >= 0 ? val[AR_channel] : val[alpha_channel]);
-    float &AGval (AG_channel >= 0 ? val[AG_channel] : val[alpha_channel]);
-    float &ABval (AB_channel >= 0 ? val[AB_channel] : val[alpha_channel]);
 
-    for (ImageBuf::Iterator<DSTTYPE> r (dst, roi);  !r.done();  ++r) {
-        int x = r.x(), y = r.y(), z = r.z();
-        int samps = src.deep_samples (x, y, z);
-        // Clear accumulated values for this pixel (0 for colors, big for Z)
-        memset (val, 0, nc*sizeof(float));
-        if (Z_channel >= 0 && samps == 0)
-            val[Z_channel] = 1.0e30;
-        if (Zback_channel >= 0 && samps == 0)
-            val[Zback_channel] = 1.0e30;
-        for (int s = 0;  s < samps;  ++s) {
-            float AR = ARval, AG = AGval, AB = ABval;  // make copies
-            float alpha = (AR + AG + AB) / 3.0f;
-            if (alpha >= 1.0f)
-                break;
-            for (int c = 0;  c < nc;  ++c) {
-                float v = src.deep_value (x, y, z, c, s);
-                if (c == Z_channel || c == Zback_channel)
-                    val[c] *= alpha;  // because Z are not premultiplied
-                float a;
-                if (c == R_channel)
-                    a = AR;
-                else if (c == G_channel)
-                    a = AG;
-                else if (c == B_channel)
-                    a = AB;
-                else
-                    a = alpha;
-                val[c] += (1.0f - a) * v;
+    ImageBufAlgo::parallel_image (roi, nthreads, [=,&dst,&src](ROI roi){
+        ASSERT (alpha_channel >= 0 ||
+                (AR_channel >= 0 && AG_channel >= 0 && AB_channel >= 0));
+        float *val = ALLOCA (float, nc);
+        float &ARval (AR_channel >= 0 ? val[AR_channel] : val[alpha_channel]);
+        float &AGval (AG_channel >= 0 ? val[AG_channel] : val[alpha_channel]);
+        float &ABval (AB_channel >= 0 ? val[AB_channel] : val[alpha_channel]);
+
+        for (ImageBuf::Iterator<DSTTYPE> r (dst, roi);  !r.done();  ++r) {
+            int x = r.x(), y = r.y(), z = r.z();
+            int samps = src.deep_samples (x, y, z);
+            // Clear accumulated values for this pixel (0 for colors, big for Z)
+            memset (val, 0, nc*sizeof(float));
+            if (Z_channel >= 0 && samps == 0)
+                val[Z_channel] = 1.0e30;
+            if (Zback_channel >= 0 && samps == 0)
+                val[Zback_channel] = 1.0e30;
+            for (int s = 0;  s < samps;  ++s) {
+                float AR = ARval, AG = AGval, AB = ABval;  // make copies
+                float alpha = (AR + AG + AB) / 3.0f;
+                if (alpha >= 1.0f)
+                    break;
+                for (int c = 0;  c < nc;  ++c) {
+                    float v = src.deep_value (x, y, z, c, s);
+                    if (c == Z_channel || c == Zback_channel)
+                        val[c] *= alpha;  // because Z are not premultiplied
+                    float a;
+                    if (c == R_channel)
+                        a = AR;
+                    else if (c == G_channel)
+                        a = AG;
+                    else if (c == B_channel)
+                        a = AB;
+                    else
+                        a = alpha;
+                    val[c] += (1.0f - a) * v;
+                }
             }
+
+            for (int c = roi.chbegin;  c < roi.chend;  ++c)
+                r[c] = val[c];
         }
-
-        for (int c = roi.chbegin;  c < roi.chend;  ++c)
-            r[c] = val[c];
-    }
-
+    });
     return true;
 }
 
@@ -229,7 +222,7 @@ ImageBufAlgo::deepen (ImageBuf &dst, const ImageBuf &src, float zvalue,
     if (add_z_channel) {
         // No z channel? Make one.
         force_spec.z_channel = force_spec.nchannels++;
-        force_spec.channelnames.push_back ("Z");
+        force_spec.channelnames.emplace_back("Z");
     }
 
     if (! IBAprep (roi, &dst, &src, NULL, &force_spec,
@@ -287,6 +280,56 @@ ImageBufAlgo::deepen (ImageBuf &dst, const ImageBuf &src, float zvalue,
     return ok;
 }
 
+
+
+bool
+ImageBufAlgo::deep_merge (ImageBuf &dst, const ImageBuf &A,
+                          const ImageBuf &B, bool occlusion_cull,
+                          ROI roi, int nthreads)
+{
+    if (! A.deep() || ! B.deep()) {
+        // For some reason, we were asked to merge a flat image.
+        dst.error ("deep_merge can only be performed on deep images");
+        return false;
+    }
+    if (! IBAprep (roi, &dst, &A, &B, NULL,
+                   IBAprep_SUPPORT_DEEP | IBAprep_REQUIRE_SAME_NCHANNELS))
+        return false;
+    if (! dst.deep()) {
+        dst.error ("Cannot deep_merge to a flat image");
+        return false;
+    }
+
+    // First, set the capacity of the dst image to reserve enough space for
+    // the segments of both source images. It may be that more insertions
+    // are needed, due to overlaps, but those will be compartively fewer
+    // than doing reallocations for every single sample.
+    DeepData &dstdd (*dst.deepdata());
+    const DeepData &Add (*A.deepdata());
+    const DeepData &Bdd (*B.deepdata());
+    for (int z = roi.zbegin; z < roi.zend; ++z)
+    for (int y = roi.ybegin; y < roi.yend; ++y)
+    for (int x = roi.xbegin; x < roi.xend; ++x) {
+        int dstpixel = dst.pixelindex (x, y, z, true);
+        int Apixel = A.pixelindex (x, y, z, true);
+        int Bpixel = B.pixelindex (x, y, z, true);
+        dstdd.set_capacity (dstpixel, Add.capacity(Apixel) + Bdd.capacity(Bpixel));
+    }
+
+    bool ok = ImageBufAlgo::copy (dst, A, TypeDesc::UNKNOWN, roi, nthreads);
+
+    for (int z = roi.zbegin; z < roi.zend; ++z)
+    for (int y = roi.ybegin; y < roi.yend; ++y)
+    for (int x = roi.xbegin; x < roi.xend; ++x) {
+        int dstpixel = dst.pixelindex (x, y, z, true);
+        int Bpixel = B.pixelindex (x, y, z, true);
+        DASSERT (dstpixel >= 0);
+        dstdd.merge_deep_pixels (dstpixel, Bdd, Bpixel);
+        if (occlusion_cull)
+            dstdd.occlusion_cull (dstpixel);
+    }
+    return ok;
+}
 
 
 OIIO_NAMESPACE_END

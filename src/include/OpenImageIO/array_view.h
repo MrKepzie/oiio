@@ -34,28 +34,16 @@
 #include <vector>
 #include <stdexcept>
 #include <iostream>
+#include <cstddef>
+#include <initializer_list>
+#include <type_traits>
 
-#if OIIO_CPLUSPLUS_VERSION >= 11
-# include <initializer_list>
-# include <type_traits>
-#else /* FIXME(C++11): this case can go away when C++11 is our minimum */
-# include <boost/type_traits.hpp>
-#endif
-
-#include "oiioversion.h"
-#include "platform.h"
-#include "dassert.h"
-#include "coordinate.h"
+#include <OpenImageIO/oiioversion.h>
+#include <OpenImageIO/platform.h>
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/coordinate.h>
 
 OIIO_NAMESPACE_BEGIN
-
-#if OIIO_CPLUSPLUS_VERSION >= 11
-using std::remove_const;
-using std::is_array;
-#else /* FIXME(C++11): this case can go away when C++11 is our minimum */
-using boost::remove_const;
-using boost::is_array;
-#endif
 
 
 template <typename T, size_t Rank> class array_view;
@@ -86,12 +74,11 @@ template <typename T, size_t Rank> class array_view_strided;
 template <typename T, size_t Rank=1>
 class array_view {
     OIIO_STATIC_ASSERT (Rank >= 1);
-    OIIO_STATIC_ASSERT (is_array<T>::value == false);
+    OIIO_STATIC_ASSERT (std::is_array<T>::value == false);
 public:
-#if OIIO_CPLUSPLUS_VERSION >= 11
     // using iterator        = bounds_iterator<Rank>;
     // using const_iterator  = bounds_iterator<Rank>;
-    static OIIO_CONSTEXPR_OR_CONST size_t rank = Rank;
+    static constexpr size_t rank = Rank;
     using offset_type     = offset<Rank>;
     using bounds_type     = OIIO::bounds<Rank>;
     using stride_type     = offset<Rank>;
@@ -100,17 +87,6 @@ public:
     using pointer         = T*;
     using const_pointer   = const T*;
     using reference       = T&;
-#else
-    static const size_t rank = Rank;
-    typedef offset<Rank> offset_type;
-    typedef OIIO::bounds<Rank> bounds_type;
-    typedef offset<Rank> stride_type;
-    typedef size_t size_type;
-    typedef T value_type;
-    typedef T* pointer;
-    typedef const T* const_pointer;
-    typedef T& reference;
-#endif
 
     /// Default ctr -- points to nothing
     array_view () : m_data(NULL) { }
@@ -142,10 +118,15 @@ public:
     /// Construct from const std::vector<T>.
     /// This turns const std::vector<T> into an array_view<const T> (the
     /// array_view isn't const, but the data it points to will be).
-    array_view (const std::vector<typename remove_const<T>::type> &v)
+    array_view (const std::vector<typename std::remove_const<T>::type> &v)
         : m_data(v.size() ? &v[0] : NULL), m_bounds(v.size()) {
         DASSERT (Rank == 1);
     }
+
+    /// Construct an array_view from an initializer_list.
+    constexpr array_view (std::initializer_list<T> il)
+        : array_view (il.begin(), il.size())
+    { }
 
     // assignments
     array_view& operator= (const array_view &copy) {
@@ -154,13 +135,13 @@ public:
         return *this;
     }
 
-    OIIO_CONSTEXPR bounds_type bounds() const OIIO_NOEXCEPT {
+    constexpr bounds_type bounds() const noexcept {
         return m_bounds;
     }
-    OIIO_CONSTEXPR14 size_type size() const OIIO_NOEXCEPT {
+    OIIO_CONSTEXPR14 size_type size() const noexcept {
         return m_bounds.size();
     }
-    OIIO_CONSTEXPR14 offset_type stride() const OIIO_NOEXCEPT {
+    OIIO_CONSTEXPR14 offset_type stride() const noexcept {
         if (Rank == 1) {
             return offset_type(1);
         } else {
@@ -171,9 +152,9 @@ public:
             return offset;
         }
     }
-    OIIO_CONSTEXPR pointer data() const OIIO_NOEXCEPT { return m_data; }
+    constexpr pointer data() const noexcept { return m_data; }
 
-    OIIO_CONSTEXPR T& operator[] (offset_type idx) const {
+    constexpr T& operator[] (offset_type idx) const {
         return VIEW_ACCESS(data(), idx, stride(), Rank);
     }
     T& at (offset_type idx) const {  // FIXME -- should be offset_type
@@ -209,10 +190,9 @@ private:
 template <typename T, size_t Rank=1>
 class array_view_strided {
     OIIO_STATIC_ASSERT (Rank >= 1);
-    OIIO_STATIC_ASSERT (is_array<T>::value == false);
+    OIIO_STATIC_ASSERT (std::is_array<T>::value == false);
 public:
-#if OIIO_CPLUSPLUS_VERSION >= 11
-    static OIIO_CONSTEXPR_OR_CONST size_t rank = Rank;
+    static constexpr size_t rank = Rank;
     using offset_type     = offset<Rank>;
     using bounds_type     = OIIO::bounds<Rank>;
     using stride_type     = offset<Rank>;
@@ -221,17 +201,6 @@ public:
     using pointer         = T*;
     using const_pointer   = const T*;
     using reference       = T&;
-#else
-    static const size_t rank = Rank;
-    typedef offset<Rank> offset_type;
-    typedef OIIO::bounds<Rank> bounds_type;
-    typedef offset<Rank> stride_type;
-    typedef size_t size_type;
-    typedef T value_type;
-    typedef T* pointer;
-    typedef const T* const_pointer;
-    typedef T& reference;
-#endif
 
     /// Default ctr -- points to nothing
     array_view_strided () : m_data(NULL), m_stride(0) { }
@@ -266,10 +235,19 @@ public:
     /// Construct from const std::vector<T>.
     /// This turns const std::vector<T> into an array_view<const T> (the
     /// array_view isn't const, but the data it points to will be).
-    array_view_strided (const std::vector<typename remove_const<T>::type> &v)
+    array_view_strided (const std::vector<typename std::remove_const<T>::type> &v)
         : m_data(v.size() ? &v[0] : NULL), m_bounds(v.size()), m_stride(1) {
         DASSERT (Rank == 1);
     }
+
+    /// Construct an array_view from an initializer_list.
+    constexpr array_view_strided (std::initializer_list<T> il)
+        : array_view_strided (il.begin(), il.size())
+    { }
+
+    /// Initialize from an array_view (stride will be 1).
+    array_view_strided (array_view<T,Rank> av)
+        : m_data(av.data()), m_bounds(av.bounds()), m_stride(1) {}
 
     // assignments
     array_view_strided& operator= (const array_view_strided &copy) {
@@ -282,7 +260,7 @@ public:
     size_type size() const { return m_bounds.size(); }
     stride_type stride() const { return m_stride; }
 
-    OIIO_CONSTEXPR T& operator[] (size_type idx) const {
+    constexpr T& operator[] (size_type idx) const {
         return VIEW_ACCESS(data(), idx, stride(), Rank);
     }
     const T& at (size_t idx) const {

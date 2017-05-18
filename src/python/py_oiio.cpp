@@ -48,7 +48,11 @@ python_array_code (TypeDesc format)
     case TypeDesc::INT32 :  return "i";
     case TypeDesc::FLOAT :  return "f";
     case TypeDesc::DOUBLE : return "d";
-    default :               return "f";   // Punt -- return float
+    case TypeDesc::HALF :   return "H";  // Return half in uint16
+    default :
+        // For any other type, including UNKNOWN, pack it into an
+        // unsigned byte array.
+        return "B";
     }
 }
 
@@ -78,15 +82,19 @@ typedesc_from_python_array_code (char code)
 object
 C_array_to_Python_array (const char *data, TypeDesc type, size_t size)
 {
-    // Construct a Python array, convert the buffer we read into a string
-    // and then into the array.
+    // Figure out what kind of array to return and create it
     object arr_module(handle<>(PyImport_ImportModule("array")));
     object array = arr_module.attr("array")(python_array_code(type));
+
+    // Create a Python byte array (or string for Python2) to hold the
+    // data.
 #if PY_MAJOR_VERSION >= 3
     object string_py(handle<>(PyBytes_FromStringAndSize(data, size)));
 #else
     object string_py(handle<>(PyString_FromStringAndSize(data, size)));
 #endif
+
+    // Copy the data from the string to the array, then return the array.
 #if (PY_MAJOR_VERSION < 3) || (PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION < 2)
     array.attr("fromstring")(string_py);
 #else
@@ -186,7 +194,7 @@ oiio_attribute_typed (const std::string &name, TypeDesc type, object &obj)
         if (vals.size() == type.numelements()*type.aggregate) {
             std::vector<ustring> u;
             for (size_t i = 0, e = vals.size(); i < e; ++i)
-                u.push_back (ustring(vals[i]));
+                u.emplace_back(vals[i]);
             return OIIO::attribute (name, type, &u[0]);
         }
         return false;
@@ -220,7 +228,7 @@ oiio_attribute_tuple_typed (const std::string &name,
         if (vals.size() == type.numelements()*type.aggregate) {
             std::vector<ustring> u;
             for (size_t i = 0, e = vals.size(); i < e; ++i)
-                u.push_back (ustring(vals[i]));
+                u.emplace_back(vals[i]);
             return OIIO::attribute (name, type, &u[0]);
         }
         return false;
@@ -364,7 +372,7 @@ OIIO_DECLARE_PYMODULE(OIIO_PYMODULE_NAME) {
 
     declare_imagebufalgo();
     
-    // Global (OpenImageIO scope) functiona and symbols
+    // Global (OpenImageIO scope) functions and symbols
     def("geterror",     &OIIO::geterror);
     def("attribute",    &oiio_attribute_float);
     def("attribute",    &oiio_attribute_int);

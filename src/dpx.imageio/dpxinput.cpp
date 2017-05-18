@@ -32,10 +32,10 @@
 #include "libdpx/DPXColorConverter.h"
 #include <OpenEXR/ImfTimeCode.h> //For TimeCode support
 
-#include "OpenImageIO/typedesc.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/fmath.h"
-#include "OpenImageIO/strutil.h"
+#include <OpenImageIO/typedesc.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/strutil.h>
 #include <iomanip>
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
@@ -99,6 +99,8 @@ OIIO_PLUGIN_EXPORTS_BEGIN
 OIIO_EXPORT ImageInput *dpx_input_imageio_create () { return new DPXInput; }
 
 OIIO_EXPORT int dpx_imageio_version = OIIO_PLUGIN_VERSION;
+
+OIIO_EXPORT const char* dpx_imageio_library_version () { return NULL; }
 
 OIIO_EXPORT const char * dpx_input_extensions[] = {
     "dpx", NULL
@@ -208,25 +210,25 @@ DPXInput::seek_subimage (int subimage, int miplevel, ImageSpec &newspec)
         /*case dpx::kUserDefinedDescriptor:
             break;*/
         case dpx::kRed:
-            m_spec.channelnames.push_back("R");
+            m_spec.channelnames.emplace_back("R");
             break;
         case dpx::kGreen:
-            m_spec.channelnames.push_back("G");
+            m_spec.channelnames.emplace_back("G");
             break;
         case dpx::kBlue:
-            m_spec.channelnames.push_back("B");
+            m_spec.channelnames.emplace_back("B");
             break;
         case dpx::kAlpha:
-            m_spec.channelnames.push_back("A");
+            m_spec.channelnames.emplace_back("A");
             m_spec.alpha_channel = 0;
             break;
         case dpx::kLuma:
             // FIXME: do we treat this as intensity or do we use Y' as per
             // convention to differentiate it from linear luminance?
-            m_spec.channelnames.push_back("Y'");
+            m_spec.channelnames.emplace_back("Y'");
             break;
         case dpx::kDepth:
-            m_spec.channelnames.push_back("Z");
+            m_spec.channelnames.emplace_back("Z");
             m_spec.z_channel = 0;
             break;
         /*case dpx::kCompositeVideo:
@@ -238,8 +240,8 @@ DPXInput::seek_subimage (int subimage, int miplevel, ImageSpec &newspec)
             break;
         case dpx::kCbYCrY:
             if (m_wantRaw) {
-                m_spec.channelnames.push_back("CbCr");
-                m_spec.channelnames.push_back("Y");
+                m_spec.channelnames.emplace_back("CbCr");
+                m_spec.channelnames.emplace_back("Y");
             } else {
                 m_spec.nchannels = 3;
                 m_spec.default_channel_names ();
@@ -247,9 +249,9 @@ DPXInput::seek_subimage (int subimage, int miplevel, ImageSpec &newspec)
             break;
         case dpx::kCbYACrYA:
             if (m_wantRaw) {
-                m_spec.channelnames.push_back("CbCr");
-                m_spec.channelnames.push_back("Y");
-                m_spec.channelnames.push_back("A");
+                m_spec.channelnames.emplace_back("CbCr");
+                m_spec.channelnames.emplace_back("Y");
+                m_spec.channelnames.emplace_back("A");
                 m_spec.alpha_channel = 2;
             } else {
                 m_spec.nchannels = 4;
@@ -258,18 +260,18 @@ DPXInput::seek_subimage (int subimage, int miplevel, ImageSpec &newspec)
             break;
         case dpx::kCbYCr:
             if (m_wantRaw) {
-                m_spec.channelnames.push_back("Cb");
-                m_spec.channelnames.push_back("Y");
-                m_spec.channelnames.push_back("Cr");
+                m_spec.channelnames.emplace_back("Cb");
+                m_spec.channelnames.emplace_back("Y");
+                m_spec.channelnames.emplace_back("Cr");
             } else
                 m_spec.default_channel_names ();
             break;
         case dpx::kCbYCrA:
             if (m_wantRaw) {
-                m_spec.channelnames.push_back("Cb");
-                m_spec.channelnames.push_back("Y");
-                m_spec.channelnames.push_back("Cr");
-                m_spec.channelnames.push_back("A");
+                m_spec.channelnames.emplace_back("Cb");
+                m_spec.channelnames.emplace_back("Y");
+                m_spec.channelnames.emplace_back("Cr");
+                m_spec.channelnames.emplace_back("A");
                 m_spec.alpha_channel = 3;
             } else {
                 m_spec.default_channel_names ();
@@ -332,8 +334,10 @@ DPXInput::seek_subimage (int subimage, int miplevel, ImageSpec &newspec)
             break;
         case dpx::kUserDefined:
             if (! isnan (m_dpx.header.Gamma ()) && m_dpx.header.Gamma () != 0) {
-                m_spec.attribute ("oiio:ColorSpace", "GammaCorrected");
-                m_spec.attribute ("oiio:Gamma", (float) m_dpx.header.Gamma ());
+                float g = float(m_dpx.header.Gamma());
+                m_spec.attribute ("oiio:ColorSpace",
+                                  Strutil::format("GammaCorrected%.2g", g));
+                m_spec.attribute ("oiio:Gamma", g);
                 break;
             }
             // intentional fall-through

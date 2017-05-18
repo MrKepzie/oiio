@@ -37,16 +37,14 @@
 #include <vector>
 #include <string>
 
-#include <boost/foreach.hpp>
-
-#include "OpenImageIO/argparse.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/sysutil.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/imagecache.h"
+#include <OpenImageIO/argparse.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/sysutil.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/imagecache.h>
 
 
-OIIO_NAMESPACE_USING;
+using namespace OIIO;
 
 
 static std::string uninitialized = "uninitialized \001 HHRU dfvAS: efjl";
@@ -81,7 +79,7 @@ static int
 parse_files (int argc, const char *argv[])
 {
     for (int i = 0;  i < argc;  i++)
-        filenames.push_back (argv[i]);
+        filenames.emplace_back(argv[i]);
     return 0;
 }
 
@@ -187,12 +185,12 @@ adjust_spec (ImageInput *in, ImageOutput *out,
     bool nocopy = no_copy_image;
 
     // Copy the spec, with possible change in format
-    outspec.set_format (inspec.format);
+    outspec.format = inspec.format;
     if (inspec.channelformats.size()) {
         // Input file has mixed channels
         if (out->supports("channelformats")) {
             // Output supports mixed formats -- so request it
-            outspec.set_format (TypeDesc::UNKNOWN);
+            outspec.format = TypeDesc::UNKNOWN;
         } else {
             // Input had mixed formats, output did not, so just use a fixed
             // format and forget the per-channel formats for output.
@@ -302,9 +300,9 @@ adjust_spec (ImageInput *in, ImageOutput *out,
             for (size_t i = 0; i < oldkwlist.size(); ++i)
                 oldkwlist[i] = Strutil::strip (oldkwlist[i]);
         }
-        BOOST_FOREACH (const std::string &nk, keywords) {
+        for (auto&& nk : keywords) {
             bool dup = false;
-            BOOST_FOREACH (const std::string &ok, oldkwlist)
+            for (auto&& ok : oldkwlist)
                 dup |= (ok == nk);
             if (! dup)
                 oldkwlist.push_back (nk);
@@ -513,7 +511,7 @@ main (int argc, char *argv[])
     bool ok = true;
 
     if (inplace) {
-        BOOST_FOREACH (const std::string &s, filenames)
+        for (auto&& s : filenames)
             ok &= convert_file (s, s);
     } else {
         ok = convert_file (filenames[0], filenames[1]);

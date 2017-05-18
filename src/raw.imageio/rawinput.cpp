@@ -28,11 +28,13 @@
   (This is the Modified BSD License)
 */
 
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/fmath.h"
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/strutil.h>
 #include <iostream>
-#include <time.h>       /* time_t, struct tm, gmtime */
+#include <ctime>       /* time_t, struct tm, gmtime */
 #include <libraw/libraw.h>
+#include <libraw/libraw_version.h>
 
 
 // This plugin utilises LibRaw:
@@ -72,6 +74,9 @@ private:
 OIIO_PLUGIN_EXPORTS_BEGIN
 
     OIIO_EXPORT int raw_imageio_version = OIIO_PLUGIN_VERSION;
+    OIIO_EXPORT const char* raw_imageio_library_version () {
+        return ustring::format("libraw %s", libraw_version()).c_str();
+    }
     OIIO_EXPORT ImageInput *raw_input_imageio_create () {
         return new RawInput;
     }
@@ -132,6 +137,29 @@ RawInput::open (const std::string &name, ImageSpec &newspec,
     m_processor.imgdata.params.gamm[0] = 1.0;
     m_processor.imgdata.params.gamm[1] = 1.0;
 
+    // Disable exposure correction (unless config "raw:auto_bright" == 1)
+    m_processor.imgdata.params.no_auto_bright =
+        ! config.get_int_attribute("raw:auto_bright", 0);
+    // Use camera white balance if "raw:use_camera_wb" is not 0
+    m_processor.imgdata.params.use_camera_wb =
+        config.get_int_attribute("raw:use_camera_wb", 1);
+    // Turn off maximum threshold value (unless set to non-zero)
+    m_processor.imgdata.params.adjust_maximum_thr =
+        config.get_float_attribute("raw:adjust_maximum_thr", 0.0f);
+    // Set camera maximum value if "raw:user_sat" is not 0
+    m_processor.imgdata.params.user_sat =
+        config.get_int_attribute("raw:user_sat", 0);
+
+    // Use embedded color profile. Values mean:
+    // 0: do not use embedded color profile
+    // 1 (default): use embedded color profile (if present) for DNG files
+    //    (always), for other files only if use_camera_wb is set.
+    // 3: use embedded color data (if present) regardless of white
+    //    balance setting.
+    m_processor.imgdata.params.use_camera_matrix =
+        config.get_int_attribute("raw:use_camera_matrix", 1);
+
+
     // Check to see if the user has explicitly set the output colorspace primaries
     std::string cs = config.get_string_attribute ("raw:ColorSpace", "sRGB");
     if (cs.size()) {
@@ -140,16 +168,27 @@ RawInput::open (const std::string &name, ImageSpec &newspec,
                                              "Adobe",
                                              "Wide",
                                              "ProPhoto",
-                                             "XYZ", NULL
+                                             "XYZ",
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
+                                             "ACES",
+#endif
+                                             NULL
                                              };
 
         size_t c;
-        for (c=0; c < sizeof(colorspaces) / sizeof(colorspaces[0]); c++)
-            if (cs == colorspaces[c])
+        for (c=0; colorspaces[c]; c++)
+            if (Strutil::iequals (cs, colorspaces[c]))
                 break;
-        if (cs == colorspaces[c])
+        if (colorspaces[c])
             m_processor.imgdata.params.output_color = c;
         else {
+#if LIBRAW_VERSION < LIBRAW_MAKE_VERSION(0,18,0)
+            if (cs == "ACES")
+                error ("raw:ColorSpace value of \"ACES\" is not supported by libRaw %d.%d.%d",
+                       LIBRAW_MAJOR_VERSION, LIBRAW_MINOR_VERSION,
+                       LIBRAW_PATCH_VERSION);
+            else
+#endif
             error("raw:ColorSpace set to unknown value");
             return false;
         }
@@ -175,9 +214,10 @@ RawInput::open (const std::string &name, ImageSpec &newspec,
     }
 
     // Interpolation quality
-    // note: LibRaw must be compiled with demosaic pack GPL2 to use
-    // demosaic algorithms 5-9. It must be compiled with demosaic pack GPL3 for 
-    // algorithm 10. If either of these packs are not includeded, it will silently use option 3 - AHD
+    // note: LibRaw must be compiled with demosaic pack GPL2 to use demosaic
+    // algorithms 5-9. It must be compiled with demosaic pack GPL3 for
+    // algorithm 10 (AMAzE). If either of these packs are not included, it
+    // will silently use option 3 - AHD.
     std::string demosaic = config.get_string_attribute ("raw:Demosaic");
     if (demosaic.size()) {
         static const char *demosaic_algs[] = { "linear",
@@ -185,22 +225,26 @@ RawInput::open (const std::string &name, ImageSpec &newspec,
                                                "PPG",
                                                "AHD",
                                                "DCB",
-                                               "Modified AHD",
+                                               "AHD-Mod",
                                                "AFD",
                                                "VCD",
                                                "Mixed",
                                                "LMMSE",
                                                "AMaZE",
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,16,0)
+                                               "DHT",
+                                               "AAHD",
+#endif
                                                // Future demosaicing algorithms should go here
                                                NULL
                                                };
         size_t d;
-        for (d=0; d < sizeof(demosaic_algs) / sizeof(demosaic_algs[0]); d++)
-            if (demosaic == demosaic_algs[d])
+        for (d=0; demosaic_algs[d]; d++)
+            if (Strutil::iequals (demosaic, demosaic_algs[d]))
                 break;
-        if (demosaic == demosaic_algs[d])
+        if (demosaic_algs[d])
             m_processor.imgdata.params.user_qual = d;
-        else if (demosaic == "none") {
+        else if (Strutil::iequals (demosaic, "none")) {
 #ifdef LIBRAW_DECODER_FLATFIELD
             // See if we can access the Bayer patterned data for this raw file
             libraw_decoder_info_t decoder_info;
@@ -220,13 +264,12 @@ RawInput::open (const std::string &name, ImageSpec &newspec,
             m_spec.height = m_processor.imgdata.sizes.raw_height;
             m_spec.nchannels = 1;
             m_spec.channelnames.clear();
-            m_spec.channelnames.push_back("R");
+            m_spec.channelnames.emplace_back("R");
 
             // Also, any previously set demosaicing options are void, so remove them
-            m_spec.erase_attribute("oiio:Colorspace", TypeDesc::STRING);
-            m_spec.erase_attribute("raw:Colorspace", TypeDesc::STRING);
-            m_spec.erase_attribute("raw:Exposure", TypeDesc::STRING);
-
+            m_spec.erase_attribute("oiio:Colorspace");
+            m_spec.erase_attribute("raw:Colorspace");
+            m_spec.erase_attribute("raw:Exposure");
         }
         else {
             error("raw:Demosaic set to unknown value");

@@ -28,12 +28,12 @@
   (This is the Modified BSD License)
 */
 
-#include <boost/scoped_array.hpp>
 #include <vector>
+#include <memory>
 #include <gif_lib.h>
 
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/thread.h"
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/thread.h>
 
 // GIFLIB:
 // http://giflib.sourceforge.net/
@@ -120,6 +120,16 @@ OIIO_PLUGIN_EXPORTS_BEGIN
 OIIO_EXPORT int gif_imageio_version = OIIO_PLUGIN_VERSION;
 OIIO_EXPORT ImageInput *gif_input_imageio_create () { return new GIFInput; }
 OIIO_EXPORT const char *gif_input_extensions[] = { "gif", NULL };
+
+OIIO_EXPORT const char* gif_imageio_library_version () {
+#define STRINGIZE2(a) #a
+#define STRINGIZE(a) STRINGIZE2(a)
+#if defined(GIFLIB_MAJOR) && defined(GIFLIB_MINOR) && defined(GIFLIB_RELEASE)
+    return "gif_lib " STRINGIZE(GIFLIB_MAJOR) "." STRINGIZE(GIFLIB_MINOR) "." STRINGIZE(GIFLIB_RELEASE);
+#else
+    return "gif_lib unknown version";
+#endif
+}
 
 OIIO_PLUGIN_EXPORTS_END
 
@@ -309,11 +319,9 @@ GIFInput::read_subimage_data()
     int window_width  = m_gif_file->Image.Width;
     int window_top    = m_gif_file->Image.Top;
     int window_left   = m_gif_file->Image.Left;
+    std::unique_ptr<unsigned char[]> fscanline (new unsigned char [window_width]);
     for (int wy = 0; wy < window_height; wy++) {
-        boost::scoped_array<unsigned char> fscanline
-                (new unsigned char[window_width]);
-        if (DGifGetLine (m_gif_file, fscanline.get(), window_width)
-                == GIF_ERROR) {
+        if (DGifGetLine (m_gif_file, &fscanline[0], window_width) == GIF_ERROR) {
             report_last_error ();
             return false;
         }

@@ -37,21 +37,24 @@
 
 
 
+#pragma once
 #ifndef OPENIMAGEIO_STRUTIL_H
 #define OPENIMAGEIO_STRUTIL_H
 
-#include <cstdarg>
 #include <string>
-#include <cstring>
-#include <cstdlib>
+#include <cstdio>
 #include <vector>
 #include <map>
 
-#include "export.h"
-#include "oiioversion.h"
-#include "tinyformat.h"
-#include "string_view.h"
-#include "hash.h"
+#include <OpenImageIO/export.h>
+#include <OpenImageIO/oiioversion.h>
+#include <OpenImageIO/string_view.h>
+#include <OpenImageIO/hash.h>
+
+#ifndef TINYFORMAT_USE_VARIADIC_TEMPLATES
+# define TINYFORMAT_USE_VARIADIC_TEMPLATES
+#endif
+#include <OpenImageIO/tinyformat.h>
 
 #ifndef OPENIMAGEIO_PRINTF_ARGS
 #   ifndef __GNUC__
@@ -79,16 +82,53 @@ OIIO_NAMESPACE_BEGIN
 /// @brief     String-related utilities.
 namespace Strutil {
 
+/// Output the string to the file/stream in a synchronized fashion, so that
+/// buffers are flushed and internal mutex is used to prevent threads from
+/// clobbering each other -- output strings coming from concurrent threads
+/// may be interleaved, but each string is "atomic" and will never splice
+/// each other character-by-character.
+void OIIO_API sync_output (FILE *file, string_view str);
+void OIIO_API sync_output (std::ostream &file, string_view str);
+
+
 /// Construct a std::string in a printf-like fashion.  In other words,
 /// something like:
 ///    std::string s = Strutil::format ("blah %d %g", (int)foo, (float)bar);
 ///
-/// The printf argument list is fully typesafe via tinyformat; format
-/// conceptually has the signature
-///
-/// std::string Strutil::format (const char *fmt, ...);
-TINYFORMAT_WRAP_FORMAT (std::string, format, /**/,
-    std::ostringstream msg;, msg, return msg.str();)
+/// Uses the tinyformat library underneath, so it's fully type-safe, and
+/// works with any types that understand stream output via '<<'.
+template<typename... Args>
+inline std::string format (string_view fmt, const Args&... args)
+{
+    return tinyformat::format (fmt.c_str(), args...);
+}
+
+
+/// Output formatted string to stdout, type-safe, and threads can't clobber
+/// one another.
+template<typename... Args>
+inline void printf (string_view fmt, const Args&... args)
+{
+    sync_output (stdout, format(fmt, args...));
+}
+
+/// Output formatted string to an open FILE*, type-safe, and threads can't
+/// clobber one another.
+template<typename... Args>
+inline void fprintf (FILE *file, string_view fmt, const Args&... args)
+{
+    sync_output (file, format(fmt, args...));
+}
+
+/// Output formatted string to an open ostream, type-safe, and threads can't
+/// clobber one another.
+template<typename... Args>
+inline void fprintf (std::ostream &file, string_view fmt, const Args&... args)
+{
+    sync_output (file, format(fmt, args...));
+}
+
+
 
 /// Return a std::string formatted from printf-like arguments.  Like the
 /// real sprintf, this is not guaranteed type-safe and is not extensible
@@ -209,6 +249,10 @@ std::string OIIO_API join (const std::vector<std::string> &seq,
 /// Repeat a string formed by concatenating str n times.
 std::string OIIO_API repeat (string_view str, int n);
 
+/// Replace a pattern inside a string and return the result. If global is
+/// true, replace all instances of the pattern, otherwise just the first.
+std::string OIIO_API replace (string_view str, string_view pattern,
+                              string_view replacement, bool global=false);
 
 // Helper template to test if a string is a generic type
 template<typename T>
@@ -239,6 +283,10 @@ inline T from_string (string_view s) {
 template<> inline int from_string<int> (string_view s) {
     return s.size() ? strtol (s.c_str(), NULL, 10) : 0;
 }
+// Special case for uint
+template<> inline unsigned int from_string<unsigned int> (string_view s) {
+    return s.size() ? strtoul (s.c_str(), NULL, 10) : (unsigned int)0;
+}
 // Special case for float
 template<> inline float from_string<float> (string_view s) {
     return s.size() ? (float)strtod (s.c_str(), NULL) : 0.0f;
@@ -264,7 +312,7 @@ template<> inline float from_string<float> (string_view s) {
 template<class T>
 int extract_from_list_string (std::vector<T> &vals,
                               string_view list,
-                              string_view sep = string_view(",",1))
+                              string_view sep = ",")
 {
     size_t nvals = vals.size();
     std::vector<string_view> valuestrings;
@@ -273,8 +321,10 @@ int extract_from_list_string (std::vector<T> &vals,
         T v = from_string<T> (valuestrings[i]);
         if (nvals == 0)
             vals.push_back (v);
-        else if (valuestrings[i].size())
-            vals[i] = from_string<T> (valuestrings[i]);
+        else if (valuestrings[i].size()) {
+            if (vals.size() > i)  // don't replace non-existnt entries
+                vals[i] = from_string<T> (valuestrings[i]);
+        }
         /* Otherwise, empty space between commas, so leave default alone */
     }
     if (valuestrings.size() == 1 && nvals > 0) {
@@ -443,6 +493,12 @@ string_view OIIO_API parse_identifier (string_view &str, bool eat=true);
 string_view OIIO_API parse_identifier (string_view &str,
                                        string_view allowed, bool eat);
 
+/// If the C-like identifier at the head of str exactly matches id,
+/// return true, and also advance str if eat is true. If it is not a match
+/// for id, return false and do not alter str.
+bool OIIO_API parse_identifier_if (string_view &str, string_view id,
+                                   bool eat=true);
+
 /// Return the characters until any character in sep is found, storing it in
 /// str, and additionally modify str to skip over the parsed section if eat
 /// is also true. Otherwise, if no word is found at the beginning of str,
@@ -471,7 +527,11 @@ string_view OIIO_API parse_nested (string_view &str, bool eat=true);
 /// vector, but C++11 support is not yet stabilized across compilers.
 /// We will eventually add that and deprecate this one, after everybody
 /// is caught up to C++11.
-void OIIO_API utf8_to_unicode (string_view &str, std::vector<uint32_t> &uvec);
+void OIIO_API utf8_to_unicode (string_view str, std::vector<uint32_t> &uvec);
+
+/// Encode the string in base64.
+/// https://en.wikipedia.org/wiki/Base64
+std::string OIIO_API base64_encode (string_view str);
 
 }  // namespace Strutil
 

@@ -36,24 +36,18 @@
 #ifndef OPENIMAGEIO_IMAGECACHE_PVT_H
 #define OPENIMAGEIO_IMAGECACHE_PVT_H
 
-#if OIIO_CPLUSPLUS_VERSION >= 11
-#  include <unordered_map>
-#else /* FIXME(C++11): remove this after making C++11 the baseline */
-#  include <boost/unordered_map.hpp>
-#endif
-
-#include <boost/scoped_ptr.hpp>
-#include <boost/scoped_array.hpp>
+#include <boost/version.hpp>
 #include <boost/thread/tss.hpp>
+#include <boost/container/flat_map.hpp>
 
 #include <OpenEXR/half.h>
 
-#include "OpenImageIO/export.h"
-#include "OpenImageIO/texture.h"
-#include "OpenImageIO/refcnt.h"
-#include "OpenImageIO/hash.h"
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/unordered_map_concurrent.h"
+#include <OpenImageIO/export.h>
+#include <OpenImageIO/texture.h>
+#include <OpenImageIO/refcnt.h>
+#include <OpenImageIO/hash.h>
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/unordered_map_concurrent.h>
 
 
 OIIO_NAMESPACE_BEGIN
@@ -70,6 +64,10 @@ namespace pvt {
 
 #define IMAGECACHE_USE_RW_MUTEX 1
 
+// Should we compute and store shadow matrices? Not if we don't support
+// shadow maps!
+#define USE_SHADOW_MATRICES 0
+
 
 using boost::thread_specific_ptr;
 
@@ -78,6 +76,13 @@ class ImageCachePerThreadInfo;
 
 const char * texture_format_name (TexFormat f);
 const char * texture_type_name (TexFormat f);
+
+#ifdef BOOST_CONTAINER_FLAT_MAP_HPP
+typedef boost::container::flat_map<uint64_t,ImageCacheFile*> UdimLookupMap;
+#else
+typedef unordered_map<uint64_t,ImageCacheFile*> UdimLookupMap;
+#endif
+
 
 
 /// Structure to hold IC and TS statistics.  We combine into a single
@@ -91,6 +96,7 @@ struct ImageCacheStatistics {
     long long find_tile_microcache_misses;
     int find_tile_cache_misses;
     long long files_totalsize;
+    long long files_totalsize_ondisk;
     long long bytes_read;
     // These stats are hard to deal with on a per-thread basis, so for
     // now, they are still atomics shared by the whole IC.
@@ -198,6 +204,7 @@ public:
     }
     bool mipused (void) const { return m_mipused; }
     bool sample_border (void) const { return m_sample_border; }
+    bool is_udim (void) const { return m_is_udim; }
     const std::vector<size_t> &mipreadcount (void) const { return m_mipreadcount; }
 
     void invalidate ();
@@ -206,6 +213,12 @@ public:
     size_t tilesread () const { return m_tilesread; }
     imagesize_t bytesread () const { return m_bytesread; }
     double & iotime () { return m_iotime; }
+    size_t redundant_tiles () const { return (size_t) m_redundant_tiles.load(); }
+    imagesize_t redundant_bytesread () const { return (imagesize_t) m_redundant_bytesread.load(); }
+    void register_redundant_tile (imagesize_t bytesread) {
+        m_redundant_tiles += 1;
+        m_redundant_bytesread += (long long) bytesread;
+    }
 
     std::time_t mod_time () const { return m_mod_time; }
     ustring fingerprint () const { return m_fingerprint; }
@@ -225,7 +238,11 @@ public:
         bool onetile;               ///< Whole level fits on one tile
         mutable bool polecolorcomputed;     ///< Pole color was computed
         mutable std::vector<float> polecolor;///< Pole colors
+        int nxtiles, nytiles, nztiles; ///< Number of tiles in each dimension
+        atomic_ll *tiles_read;      ///< Bitfield for tiles read at least once
         LevelInfo (const ImageSpec &spec, const ImageSpec &nativespec);  ///< Initialize based on spec
+        LevelInfo (const LevelInfo &src); // needed for vector<LevelInfo>
+        ~LevelInfo () { delete [] tiles_read; }
     };
 
     /// Info for each subimage
@@ -261,6 +278,7 @@ public:
         ImageSpec &spec (int m) { return levels[m].spec; }
         const ImageSpec &spec (int m) const { return levels[m].spec; }
         const ImageSpec &nativespec (int m) const { return levels[m].nativespec; }
+        int miplevels () const { return (int) levels.size(); }
     };
 
     const SubimageInfo &subimageinfo (int subimage) const {
@@ -292,41 +310,56 @@ public:
         m_validspec = false;
         m_subimages.clear ();
     }
+
+    /// Should we print an error message? Keeps track of whether the
+    /// number of errors so far, including this one, is a above the limit
+    /// set for errors to print for each file.
+    int errors_should_issue () const;
     
 private:
     ustring m_filename_original;    ///< original filename before search path
     ustring m_filename;             ///< Filename
     bool m_used;                    ///< Recently used (in the LRU sense)
     bool m_broken;                  ///< has errors; can't be used properly
-    shared_ptr<ImageInput> m_input; ///< Open ImageInput, NULL if closed
+    std::shared_ptr<ImageInput> m_input; ///< Open ImageInput, NULL if closed
     std::vector<SubimageInfo> m_subimages;  ///< Info on each subimage
     TexFormat m_texformat;          ///< Which texture format
     TextureOpt::Wrap m_swrap;       ///< Default wrap modes
     TextureOpt::Wrap m_twrap;       ///< Default wrap modes
     TextureOpt::Wrap m_rwrap;       ///< Default wrap modes
+#if USE_SHADOW_MATRICES
     Imath::M44f m_Mlocal;           ///< shadows: world-to-local (light) matrix
     Imath::M44f m_Mproj;            ///< shadows: world-to-pseudo-NDC
     Imath::M44f m_Mtex;             ///< shadows: world-to-pNDC with camera z
     Imath::M44f m_Mras;             ///< shadows: world-to-raster with camera z
+#endif
     EnvLayout m_envlayout;          ///< env map: which layout?
     bool m_y_up;                    ///< latlong: is y "up"? (else z is up)
     bool m_sample_border;           ///< are edge samples exactly on the border?
+    bool m_is_udim;                 ///< Is tiled/UDIM?
     ustring m_fileformat;           ///< File format name
     size_t m_tilesread;             ///< Tiles read from this file
     imagesize_t m_bytesread;        ///< Bytes read from this file
+    atomic_ll m_redundant_tiles;    ///< Redundant tile reads
+    atomic_ll m_redundant_bytesread;///< Redundant bytes read
     size_t m_timesopened;           ///< Separate times we opened this file
     double m_iotime;                ///< I/O time for this file
     bool m_mipused;                 ///< MIP level >0 accessed
-    std::vector<size_t> m_mipreadcount; ///< Tile reads per mip level
     volatile bool m_validspec;      ///< If false, reread spec upon open
+    mutable int m_errors_issued;    ///< Errors issued for this file
+    std::vector<size_t> m_mipreadcount; ///< Tile reads per mip level
     ImageCacheImpl &m_imagecache;   ///< Back pointer for ImageCache
     mutable recursive_mutex m_input_mutex; ///< Mutex protecting the ImageInput
     std::time_t m_mod_time;         ///< Time file was last updated
     ustring m_fingerprint;          ///< Optional cryptographic fingerprint
     ImageCacheFile *m_duplicate;    ///< Is this a duplicate?
     imagesize_t m_total_imagesize;  ///< Total size, uncompressed
+    imagesize_t m_total_imagesize_ondisk;  ///< Total size, compressed on disk
     ImageInput::Creator m_inputcreator; ///< Custom ImageInput-creator
-    boost::scoped_ptr<ImageSpec> m_configspec; // Optional configuration hints
+    std::unique_ptr<ImageSpec> m_configspec; // Optional configuration hints
+    UdimLookupMap m_udim_lookup;    ///< Used for decoding udim tiles
+                                    // protected by mutex elsewhere!
+
 
     /// We will need to read pixels from the file, so be sure it's
     /// currently opened.  Return true if ok, false if error.
@@ -385,11 +418,7 @@ typedef intrusive_ptr<ImageCacheFile> ImageCacheFileRef;
 
 /// Map file names to file references
 typedef unordered_map_concurrent<ustring,ImageCacheFileRef,ustringHash,std::equal_to<ustring>, 8> FilenameMap;
-#if OIIO_CPLUSPLUS_VERSION >= 11
 typedef std::unordered_map<ustring,ImageCacheFileRef,ustringHash> FingerprintMap;
-#else /* FIXME(C++11): remove this after making C++11 the baseline */
-typedef boost::unordered_map<ustring,ImageCacheFileRef,ustringHash> FingerprintMap;
-#endif
 
 
 
@@ -583,7 +612,8 @@ public:
             return true;  // Don't really release invalid or unready tiles
         // If m_used is 1, set it to zero and return true.  If it was already
         // zero, it's fine and return false.
-        return atomic_compare_and_exchange ((volatile int *)&m_used, 1, 0);
+        int one = 1;
+        return m_used.compare_exchange_strong (one, 0);
     }
 
     /// Has this tile been recently used?
@@ -605,7 +635,7 @@ public:
 
 private:
     TileID m_id;                  ///< ID of this tile
-    boost::scoped_array<char> m_pixels;  ///< The pixel data
+    std::unique_ptr<char[]> m_pixels;  ///< The pixel data
     size_t m_pixels_size;         ///< How much m_pixels has allocated
     int m_channelsize;            ///< How big is each channel (bytes)
     int m_pixelsize;              ///< How big is each pixel (bytes)
@@ -729,10 +759,6 @@ public:
     }
 
 
-    /// Close everything, free resources, start from scratch.
-    ///
-    virtual void clear () { }
-
     // Retrieve options
     int max_open_files () const { return m_max_open_files; }
     const std::string &searchpath () const { return m_searchpath; }
@@ -749,8 +775,12 @@ public:
     void get_commontoworld (Imath::M44f &result) const {
         result = m_Mc2w;
     }
+    int max_errors_per_file () const { return m_max_errors_per_file; }
 
     virtual std::string resolve_filename (const std::string &filename) const;
+
+    // Set m_max_open_files, with logic to try to clamp reasonably.
+    void set_max_open_files (int m);
 
     /// Get information about the given image.
     ///
@@ -920,10 +950,7 @@ public:
     /// the number of simultaneously-opened files.
     void incr_open_files (void) {
         ++m_stat_open_files_created;
-        ++m_stat_open_files_current;
-        if (m_stat_open_files_current > m_stat_open_files_peak)
-            m_stat_open_files_peak = m_stat_open_files_current;
-        // FIXME -- can we make an atomic_max?
+        atomic_max (m_stat_open_files_peak, ++m_stat_open_files_current);
     }
 
     /// Called when a file is closed, so that the system can track
@@ -936,9 +963,7 @@ public:
     ///
     void incr_tiles (size_t size) {
         ++m_stat_tiles_created;
-        ++m_stat_tiles_current;
-        if (m_stat_tiles_current > m_stat_tiles_peak)
-            m_stat_tiles_peak = m_stat_tiles_current;
+        atomic_max (m_stat_tiles_peak, ++m_stat_tiles_current);
         m_mem_used += size;
     }
 
@@ -957,10 +982,10 @@ public:
     }
 
     /// Internal error reporting routine, with printf-like arguments.
-    ///
-    /// void error (const char *message, ...);
-    TINYFORMAT_WRAP_FORMAT (void, error, const,
-        std::ostringstream msg;, msg, append_error(msg.str());)
+    template<typename... Args>
+    void error (string_view fmt, const Args&... args) const {
+        append_error(Strutil::format (fmt, args...));
+    }
 
     /// Append a string to the current error message
     void append_error (const std::string& message) const;
@@ -988,6 +1013,10 @@ public:
 
     /// Enforce the max number of open files.
     void check_max_files (ImageCachePerThreadInfo *thread_info);
+
+    // For virtual UDIM-like files, adjust s and t and return the concrete
+    // ImageCacheFile pointer for the tile it's on.
+    ImageCacheFile *resolve_udim (ImageCacheFile *file, float &s, float &t);
 
 private:
     void init ();
@@ -1060,6 +1089,7 @@ private:
 
     atomic_ll m_mem_used;        ///< Memory being used for tiles
     int m_statslevel;            ///< Statistics level
+    int m_max_errors_per_file;   ///< Max errors to print for each file.
 
     /// Saved error string, per-thread
     ///
@@ -1080,10 +1110,7 @@ private:
     void incr_time_stat (double &stat, double incr) {
         stat += incr;
         return;
-#ifdef NOTHREADS
-        stat += incr;
-#else
-        DASSERT (sizeof (atomic_ll) == sizeof(double));
+        OIIO_STATIC_ASSERT (sizeof (atomic_ll) == sizeof(double));
         double oldval, newval;
         long long *lloldval = (long long *)&oldval;
         long long *llnewval = (long long *)&newval;
@@ -1096,8 +1123,7 @@ private:
             newval = oldval + incr;
             // Now try to atomically swap it, and repeat until we've
             // done it with nobody else interfering.
-        } while (llstat->bool_compare_and_swap (*llnewval,*lloldval));
-#endif
+        } while (llstat->compare_exchange_strong (*llnewval,*lloldval));
     }
 
 };

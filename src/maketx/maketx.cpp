@@ -38,19 +38,19 @@
 
 #include <OpenEXR/ImathMatrix.h>
 
-#include "OpenImageIO/argparse.h"
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/fmath.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/timer.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/imagebufalgo.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/filter.h"
+#include <OpenImageIO/argparse.h>
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/timer.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
+#include <OpenImageIO/thread.h>
+#include <OpenImageIO/filter.h>
 
-OIIO_NAMESPACE_USING
+using namespace OIIO;
 
 
 // # FIXME: Refactor all statics into a struct
@@ -133,7 +133,7 @@ static int
 parse_files (int argc, const char *argv[])
 {
     for (int i = 0;  i < argc;  i++)
-        filenames.push_back (argv[i]);
+        filenames.emplace_back(argv[i]);
     return 0;
 }
 

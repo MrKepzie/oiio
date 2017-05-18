@@ -31,17 +31,16 @@
 #include <sstream>
 #include <fstream>
 
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/unittest.h"
+#include <OpenImageIO/platform.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/unittest.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sys/stat.h>
+#ifndef _WIN32
+# include <sys/stat.h>
 #endif
 
-OIIO_NAMESPACE_USING;
+using namespace OIIO;
 
 
 // This will be run via testsuite/unit_filesystem, from the
@@ -132,8 +131,19 @@ test_file_status ()
     fputs (testtext, file);
     fclose (file);
 
+    std::cout << "Testing file_size:\n";
+    OIIO_CHECK_EQUAL (Filesystem::file_size("testfile"), 13);
+
     std::cout << "Testing read_text_file\n";
     OIIO_CHECK_EQUAL (my_read_text_file("testfile"), testtext);
+
+    std::cout << "Testing read_bytes:\n";
+    char buf[3];
+    size_t nread = Filesystem::read_bytes ("testfile", buf, 3, 5);
+    OIIO_CHECK_EQUAL (nread, 3);
+    OIIO_CHECK_EQUAL (buf[0], 'f');
+    OIIO_CHECK_EQUAL (buf[1], 'o');
+    OIIO_CHECK_EQUAL (buf[2], 'o');
 
     std::cout << "Testing create_directory\n";
     Filesystem::create_directory ("testdir");
@@ -229,7 +239,7 @@ test_file_seq_with_view (const char *pattern, const char *override, const char *
 
     if (view) {
         for (size_t i = 0, e = numbers.size(); i < e; ++i)
-            views.push_back(view);
+            views.emplace_back(view);
     }
 
     Filesystem::enumerate_file_sequence (normalized_pattern, numbers, views, names);
@@ -280,7 +290,7 @@ test_scan_file_seq_with_views (const char *pattern, const char **views_, const s
     std::vector<string_view> views;
 
     for (size_t i = 0; views_[i]; ++i)
-        views.push_back(views_[i]);
+        views.emplace_back(views_[i]);
 
     Filesystem::parse_pattern(pattern, 0, normalized_pattern, frame_range);
     Filesystem::scan_for_matching_filenames (normalized_pattern, views, frame_numbers, frame_views, frame_names);

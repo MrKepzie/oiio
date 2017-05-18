@@ -43,10 +43,10 @@
 #  pragma warning (disable : 4251)
 #endif
 
-#include "imageio.h"
-#include "fmath.h"
-#include "imagecache.h"
-#include "dassert.h"
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/imagecache.h>
+#include <OpenImageIO/dassert.h>
 
 #include <limits>
 
@@ -267,6 +267,19 @@ public:
                ProgressCallback progress_callback=NULL,
                void *progress_callback_data=NULL);
 
+    /// Read the file from disk, if possible only allocating and reading a
+    /// subset of channels, [chbegin..chend-1] from disk. This can be a
+    /// performance and memory improvement if you know that any use of the
+    /// ImageBuf will only access a subset of channels from a many-channel
+    /// file. If chbegin==0 and chend is either negative or greater than the
+    /// number of channels in the file, all channels will be read. Please
+    /// note that it is "advisory" and not guaranteed to be honored by the
+    /// underlying implementation.
+    bool read (int subimage, int miplevel, int chbegin, int chend,
+               bool force, TypeDesc convert,
+               ProgressCallback progress_callback=NULL,
+               void *progress_callback_data=NULL);
+
     /// Initialize this ImageBuf with the named image file, and read its
     /// header to fill out the spec correctly.  Return true if this
     /// succeeded, false if the file could not be read.  But don't
@@ -345,9 +358,10 @@ public:
 
     /// Error reporting for ImageBuf: call this with printf-like
     /// arguments.  Note however that this is fully typesafe!
-    /// void error (const char *format, ...)
-    TINYFORMAT_WRAP_FORMAT (void, error, const,
-        std::ostringstream msg;, msg, append_error(msg.str());)
+    template<typename... Args>
+    void error (string_view fmt, const Args&... args) const {
+        append_error(Strutil::format (fmt, args...));
+    }
 
     /// Return true if the IB has had an error and has an error message
     /// to retrieve via geterror().
@@ -408,6 +422,9 @@ public:
     /// a value outside the usual data range of an image.
     enum WrapMode { WrapDefault, WrapBlack, WrapClamp, WrapPeriodic,
                     WrapMirror, _WrapLast };
+
+    /// Named wrap mode to enum WrapMode.
+    static WrapMode WrapMode_from_string (string_view name);
 
     /// Retrieve a single channel of one pixel.
     ///
@@ -648,6 +665,10 @@ public:
     /// Use with extreme caution!  Will return NULL if the pixel values
     /// aren't local.
     void *pixeladdr (int x, int y, int z);
+
+    /// Return the index of pixel (x,y,z). If check_range is true, return
+    /// -1 for an invalid coordinate that is not within the data window.
+    int pixelindex (int x, int y, int z, bool check_range=false) const;
 
     /// Does this ImageBuf store deep data?
     bool deep () const;

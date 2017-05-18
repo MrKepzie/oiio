@@ -27,8 +27,8 @@
 
   (This is the Modified BSD License)
 */
-#include "OpenImageIO/color.h"
-#include "OpenImageIO/imagebufalgo.h"
+#include <OpenImageIO/color.h>
+#include <OpenImageIO/imagebufalgo.h>
 #include "py_oiio.h"
 
 
@@ -229,6 +229,26 @@ IBA_flatten (ImageBuf &dst, const ImageBuf &src, ROI roi, int nthreads)
 {
     ScopedGILRelease gil;
     return ImageBufAlgo::flatten (dst, src, roi, nthreads);
+}
+
+
+
+bool
+IBA_deep_merge (ImageBuf &dst, const ImageBuf &A, const ImageBuf &B,
+                 bool occlusion_cull, ROI roi, int nthreads)
+{
+    ScopedGILRelease gil;
+    return ImageBufAlgo::deep_merge (dst, A, B, occlusion_cull, roi, nthreads);
+}
+
+
+
+bool
+IBA_copy (ImageBuf &dst, const ImageBuf &src, TypeDesc::BASETYPE convert,
+          ROI roi, int nthreads)
+{
+    ScopedGILRelease gil;
+    return ImageBufAlgo::copy (dst, src, convert, roi, nthreads);
 }
 
 
@@ -660,6 +680,43 @@ IBA_channel_sum (ImageBuf &dst, const ImageBuf &src,
 }
 
 
+bool
+IBA_color_map_values (ImageBuf &dst, const ImageBuf &src, int srcchannel,
+                      int nknots, int channels, tuple knots_tuple,
+                      ROI roi=ROI::All(), int nthreads=0)
+{
+    std::vector<float> knots;
+    py_to_stdvector (knots, knots_tuple);
+    if (! src.initialized()) {
+        dst.error ("Uninitialized source image for color_map");
+        return false;
+    }
+    if (! knots.size()) {
+        dst.error ("No knot values supplied");
+        return false;
+    }
+    ScopedGILRelease gil;
+    return ImageBufAlgo::color_map (dst, src, srcchannel, nknots, channels,
+                                    knots, roi, nthreads);
+}
+
+
+bool
+IBA_color_map_name (ImageBuf &dst, const ImageBuf &src, int srcchannel,
+                    const std::string& mapname,
+                    ROI roi=ROI::All(), int nthreads=0)
+{
+    if (! src.initialized()) {
+        dst.error ("Uninitialized source image for color_map");
+        return false;
+    }
+    ScopedGILRelease gil;
+    return ImageBufAlgo::color_map (dst, src, srcchannel, mapname,
+                                    roi, nthreads);
+}
+
+
+
 bool IBA_rangeexpand (ImageBuf &dst, const ImageBuf &src,
                       bool useluma = false,
                       ROI roi = ROI::All(), int nthreads=0)
@@ -692,6 +749,15 @@ bool IBA_unpremult (ImageBuf &dst, const ImageBuf &src,
 {
     ScopedGILRelease gil;
     return ImageBufAlgo::unpremult (dst, src, roi, nthreads);
+}
+
+
+
+bool IBA_computePixelStats (const ImageBuf &src, ImageBufAlgo::PixelStats &stats,
+                            ROI roi, int nthreads)
+{
+    ScopedGILRelease gil;
+    return ImageBufAlgo::computePixelStats (stats, src, roi, nthreads);
 }
 
 
@@ -845,6 +911,26 @@ IBA_median_filter (ImageBuf &dst, const ImageBuf &src,
 
 
 bool
+IBA_dilate (ImageBuf &dst, const ImageBuf &src,
+            int width, int height, ROI roi, int nthreads)
+{
+    ScopedGILRelease gil;
+    return ImageBufAlgo::dilate (dst, src, width, height, roi, nthreads);
+}
+
+
+
+bool
+IBA_erode (ImageBuf &dst, const ImageBuf &src,
+           int width, int height, ROI roi, int nthreads)
+{
+    ScopedGILRelease gil;
+    return ImageBufAlgo::erode (dst, src, width, height, roi, nthreads);
+}
+
+
+
+bool
 IBA_laplacian (ImageBuf &dst, const ImageBuf &src, ROI roi, int nthreads)
 {
     ScopedGILRelease gil;
@@ -935,12 +1021,16 @@ IBA_colorconvert (ImageBuf &dst, const ImageBuf &src,
 bool
 IBA_colorconvert_colorconfig (ImageBuf &dst, const ImageBuf &src,
                   const std::string &from, const std::string &to,
-                  bool unpremult = false, const std::string &colorconfig="",
+                  bool unpremult = false,
+                  const std::string &context_key="",
+                  const std::string &context_value="",
+                  const std::string &colorconfig="",
                   ROI roi = ROI::All(), int nthreads = 0)
 {
     ColorConfig config (colorconfig);
     ScopedGILRelease gil;
     return ImageBufAlgo::colorconvert (dst, src, from, to, unpremult,
+                                       context_key, context_value,
                                        &config, roi, nthreads);
 }
 
@@ -1155,14 +1245,41 @@ bool
 IBA_render_text (ImageBuf &dst, int x, int y,
                  const std::string &text,
                  int fontsize=16, const std::string &fontname="",
-                 tuple textcolor_ = tuple())
+                 tuple textcolor_ = tuple(),
+                 const std::string ax = "left",
+                 const std::string ay = "baseline",
+                 int shadow = 0, ROI roi = ROI::All(), int nthreads = 0)
 {
     std::vector<float> textcolor;
     py_to_stdvector (textcolor, textcolor_);
     textcolor.resize (dst.nchannels(), 1.0f);
     ScopedGILRelease gil;
+    using ImageBufAlgo::TextAlignX;
+    using ImageBufAlgo::TextAlignY;
+    TextAlignX alignx (TextAlignX::Left);
+    TextAlignY aligny (TextAlignY::Baseline);
+    if (Strutil::iequals(ax, "right") || Strutil::iequals(ax, "r"))
+        alignx = TextAlignX::Right;
+    if (Strutil::iequals(ax, "center") || Strutil::iequals(ax, "c"))
+        alignx = TextAlignX::Center;
+    if (Strutil::iequals(ay, "top") || Strutil::iequals(ay, "t"))
+        aligny = TextAlignY::Top;
+    if (Strutil::iequals(ay, "bottom") || Strutil::iequals(ay, "b"))
+        aligny = TextAlignY::Bottom;
+    if (Strutil::iequals(ay, "center") || Strutil::iequals(ay, "c"))
+        aligny = TextAlignY::Center;
     return ImageBufAlgo::render_text (dst, x, y, text, fontsize, fontname,
-                                      &textcolor[0]);
+                                      textcolor, alignx, aligny, shadow,
+                                      roi, nthreads);
+}
+
+
+ROI
+IBA_text_size (const std::string &text,
+               int fontsize=16, const std::string &fontname="")
+{
+    ScopedGILRelease gil;
+    return ImageBufAlgo::text_size (text, fontsize, fontname);
 }
 
 
@@ -1201,6 +1318,108 @@ IBA_make_texture_filename (ImageBufAlgo::MakeTextureMode mode,
 
 
 
+#if PY_MAJOR_VERSION >= 3
+# define PYLONG(x) PyLong_FromLong((long)x)
+#else
+# define PYLONG(x) PyInt_FromLong((long)x)
+#endif
+
+
+static object
+PixelStats_get_min(const ImageBufAlgo::PixelStats& stats)
+{
+    size_t size = stats.min.size();
+    PyObject* result = PyTuple_New(size);
+    for (size_t i = 0; i < size; ++i)
+        PyTuple_SetItem(result, i, PyFloat_FromDouble(stats.min[i]));
+    return object(handle<>(result));
+}
+
+static object
+PixelStats_get_max(const ImageBufAlgo::PixelStats& stats)
+{
+    size_t size = stats.min.size();
+    PyObject* result = PyTuple_New(size);
+    for (size_t i = 0; i < size; ++i)
+        PyTuple_SetItem(result, i, PyFloat_FromDouble(stats.max[i]));
+    return object(handle<>(result));
+}
+
+static object
+PixelStats_get_avg(const ImageBufAlgo::PixelStats& stats)
+{
+    size_t size = stats.min.size();
+    PyObject* result = PyTuple_New(size);
+    for (size_t i = 0; i < size; ++i)
+        PyTuple_SetItem(result, i, PyFloat_FromDouble(stats.avg[i]));
+    return object(handle<>(result));
+}
+
+static object
+PixelStats_get_stddev(const ImageBufAlgo::PixelStats& stats)
+{
+    size_t size = stats.min.size();
+    PyObject* result = PyTuple_New(size);
+    for (size_t i = 0; i < size; ++i)
+        PyTuple_SetItem(result, i, PyFloat_FromDouble(stats.stddev[i]));
+    return object(handle<>(result));
+}
+
+static object
+PixelStats_get_nancount(const ImageBufAlgo::PixelStats& stats)
+{
+    size_t size = stats.min.size();
+    PyObject* result = PyTuple_New(size);
+    for (size_t i = 0; i < size; ++i)
+        PyTuple_SetItem(result, i, PYLONG((long)stats.nancount[i]));
+    return object(handle<>(result));
+}
+
+static object
+PixelStats_get_infcount(const ImageBufAlgo::PixelStats& stats)
+{
+    size_t size = stats.min.size();
+    PyObject* result = PyTuple_New(size);
+    for (size_t i = 0; i < size; ++i)
+        PyTuple_SetItem(result, i, PYLONG((long)stats.infcount[i]));
+    return object(handle<>(result));
+}
+
+static object
+PixelStats_get_finitecount(const ImageBufAlgo::PixelStats& stats)
+{
+    size_t size = stats.min.size();
+    PyObject* result = PyTuple_New(size);
+    for (size_t i = 0; i < size; ++i)
+        PyTuple_SetItem(result, i, PYLONG((long)stats.finitecount[i]));
+    return object(handle<>(result));
+}
+
+static object
+PixelStats_get_sum(const ImageBufAlgo::PixelStats& stats)
+{
+    size_t size = stats.min.size();
+    PyObject* result = PyTuple_New(size);
+    for (size_t i = 0; i < size; ++i)
+        PyTuple_SetItem(result, i, PyFloat_FromDouble(stats.sum[i]));
+    return object(handle<>(result));
+}
+
+static object
+PixelStats_get_sum2(const ImageBufAlgo::PixelStats& stats)
+{
+    size_t size = stats.min.size();
+    PyObject* result = PyTuple_New(size);
+    for (size_t i = 0; i < size; ++i)
+        PyTuple_SetItem(result, i, PyFloat_FromDouble(stats.sum2[i]));
+    return object(handle<>(result));
+}
+
+
+
+
+
+
 void declare_imagebufalgo()
 {
     enum_<ImageBufAlgo::NonFiniteFixMode>("NonFiniteFixMode")
@@ -1217,6 +1436,18 @@ void declare_imagebufalgo()
         .value("MakeTxEnvLatlFromLightProbe",
                                 ImageBufAlgo::MakeTxEnvLatlFromLightProbe)
         .export_values()
+    ;
+
+    class_<ImageBufAlgo::PixelStats>("PixelStats")
+        .add_property("min", &PixelStats_get_min)
+        .add_property("max", &PixelStats_get_max)
+        .add_property("avg", &PixelStats_get_avg)
+        .add_property("stddev", &PixelStats_get_stddev)
+        .add_property("nancount", &PixelStats_get_nancount)
+        .add_property("infcount", &PixelStats_get_infcount)
+        .add_property("finitecount", &PixelStats_get_finitecount)
+        .add_property("sum", &PixelStats_get_sum)
+        .add_property("sum2", &PixelStats_get_sum2)
     ;
 
     class_<ImageBufAlgo::CompareResults>("CompareResults")
@@ -1282,6 +1513,16 @@ void declare_imagebufalgo()
              (arg("dst"), arg("src"),
               arg("roi")=ROI::All(), arg("nthreads")=0))
         .staticmethod("flatten")
+
+        .def("deep_merge", IBA_deep_merge,
+             (arg("dst"), arg("A"), arg("B"), arg("occlusion_cull")=true,
+              arg("roi")=ROI::All(), arg("nthreads")=0))
+        .staticmethod("deep_merge")
+
+        .def("copy", IBA_copy,
+             (arg("dst"), arg("src"), arg("convert")=TypeDesc::UNKNOWN,
+              arg("roi")=ROI::All(), arg("nthreads")=0))
+        .staticmethod("copy")
 
         .def("crop", IBA_crop,
              (arg("dst"), arg("src"),
@@ -1431,6 +1672,15 @@ void declare_imagebufalgo()
               arg("roi")=ROI::All(), arg("nthreads")=0))
         .staticmethod("channel_sum")
 
+        .def("color_map", &IBA_color_map_name,
+             (arg("dst"), arg("src"), arg("srcchannel"), arg("mapname"),
+              arg("roi")=ROI::All(), arg("nthreads")=0))
+        .def("color_map", &IBA_color_map_values,
+             (arg("dst"), arg("src"), arg("srcchannel"),
+              arg("nknots"), arg("channels"), arg("knots"),
+              arg("roi")=ROI::All(), arg("nthreads")=0))
+        .staticmethod("color_map")
+
         .def("rangecompress", &IBA_rangecompress,
              (arg("dst"), arg("src"), arg("useluma")=false,
               arg("roi")=ROI::All(), arg("nthreads")=0))
@@ -1470,8 +1720,10 @@ void declare_imagebufalgo()
               arg("roi")=ROI::All(), arg("nthreads")=0))
         .def("colorconvert", &IBA_colorconvert_colorconfig,
              (arg("dst"), arg("src"),
-              arg("from"), arg("to"), 
-              arg("unpremult")=false, arg("colorconfig")="",
+              arg("from"), arg("to"),
+              arg("unpremult")=false,
+              arg("context_key")="", arg("context_value")="",
+              arg("colorconfig")="",
               arg("roi")=ROI::All(), arg("nthreads")=0))
         .staticmethod("colorconvert")
 
@@ -1518,7 +1770,10 @@ void declare_imagebufalgo()
               arg("roi")=ROI::All(), arg("nthreads")=0))
         .staticmethod("ociofiletransform")
 
-        // computePixelStats, 
+        .def("computePixelStats", &IBA_computePixelStats,
+             (arg("src"), arg("stats"),
+              arg("roi")=ROI::All(), arg("nthreads")=0))
+        .staticmethod("computePixelStats")
 
         .def("compare", &IBA_compare,
              (arg("A"), arg("B"), arg("failthresh"), arg("warnthresh"),
@@ -1609,6 +1864,18 @@ void declare_imagebufalgo()
               arg("roi")=ROI::All(), arg("nthreads")=0))
         .staticmethod("median_filter")
 
+        .def("dilate", &IBA_dilate,
+             (arg("dst"), arg("src"),
+              arg("width")=3, arg("height")=-1,
+              arg("roi")=ROI::All(), arg("nthreads")=0))
+        .staticmethod("dilate")
+
+        .def("erode", &IBA_erode,
+             (arg("dst"), arg("src"),
+              arg("width")=3, arg("height")=-1,
+              arg("roi")=ROI::All(), arg("nthreads")=0))
+        .staticmethod("erode")
+
         .def("laplacian", &IBA_laplacian,
              (arg("dst"), arg("src"),
               arg("roi")=ROI::All(), arg("nthreads")=0))
@@ -1677,8 +1944,14 @@ void declare_imagebufalgo()
         .def("render_text", &IBA_render_text,
              (arg("dst"), arg("x"), arg("y"), arg("text"),
               arg("fontsize")=16, arg("fontname")="",
-              arg("textcolor")=tuple()))
+              arg("textcolor")=tuple(), arg("alignx")="left",
+              arg("aligny")="baseline", arg("shadow")=0,
+              arg("roi")=ROI::All(), arg("nthreads")=0))
         .staticmethod("render_text")
+
+        .def("text_size", &IBA_text_size,
+             (arg("text"), arg("fontsize")=16, arg("fontname")=""))
+        .staticmethod("text_size")
 
         // histogram, histogram_draw,
 

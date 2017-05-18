@@ -36,13 +36,6 @@
 
 #include "png_pvt.h"
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/typedesc.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/fmath.h"
-
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
 
@@ -102,6 +95,10 @@ OIIO_PLUGIN_EXPORTS_BEGIN
 OIIO_EXPORT ImageInput *png_input_imageio_create () { return new PNGInput; }
 
 OIIO_EXPORT int png_imageio_version = OIIO_PLUGIN_VERSION;
+
+OIIO_EXPORT const char* png_imageio_library_version () {
+    return "libpng " PNG_LIBPNG_VER_STRING;
+}
 
 OIIO_EXPORT const char * png_input_extensions[] = {
     "png", NULL

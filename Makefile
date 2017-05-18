@@ -12,7 +12,6 @@
 .PHONY: all debug profile clean realclean nuke doxygen
 
 working_dir	:= ${shell pwd}
-INSTALLDIR	=${working_dir}
 
 # Figure out which architecture we're on
 include ${working_dir}/src/make/detectplatform.mk
@@ -28,7 +27,7 @@ endif
 
 MY_MAKE_FLAGS ?=
 MY_NINJA_FLAGS ?=
-MY_CMAKE_FLAGS ?= -g3 -DSELF_CONTAINED_INSTALL_TREE:BOOL=TRUE
+MY_CMAKE_FLAGS += -g3 -DSELF_CONTAINED_INSTALL_TREE:BOOL=TRUE
 BUILDSENTINEL ?= Makefile
 NINJA ?= ninja
 CMAKE ?= cmake
@@ -48,6 +47,13 @@ build_dir     := ${top_build_dir}/${platform}${variant}
 top_dist_dir  := dist
 dist_dir      := ${top_dist_dir}/${platform}${variant}
 
+ifndef INSTALL_PREFIX
+INSTALL_PREFIX := ${working_dir}/${dist_dir}
+INSTALL_PREFIX_BRIEF := ${dist_dir}
+else
+INSTALL_PREFIX_BRIEF := ${INSTALL_PREFIX}
+endif
+
 VERBOSE ?= ${SHOWCOMMANDS}
 ifneq (${VERBOSE},)
 MY_MAKE_FLAGS += VERBOSE=${VERBOSE}
@@ -58,7 +64,7 @@ ifneq (${VERBOSE},0)
 endif
 $(info OPENIMAGEIO_SITE = ${OPENIMAGEIO_SITE})
 $(info dist_dir = ${dist_dir})
-$(info INSTALLDIR = ${INSTALLDIR})
+$(info INSTALL_PREFIX = ${INSTALL_PREFIX})
 endif
 
 ifneq (${EMBEDPLUGINS},)
@@ -75,10 +81,6 @@ endif
 
 ifneq (${FORCE_OPENGL_1},)
 MY_CMAKE_FLAGS += -DFORCE_OPENGL_1:BOOL=${FORCE_OPENGL_1}
-endif
-
-ifneq (${NOTHREADS},)
-MY_CMAKE_FLAGS += -DNOTHREADS:BOOL=${NOTHREADS}
 endif
 
 ifneq (${OIIO_THREAD_ALLOW_DCLP},)
@@ -105,6 +107,14 @@ ifneq (${PYTHON_VERSION},)
 MY_CMAKE_FLAGS += -DPYTHON_VERSION:STRING=${PYTHON_VERSION}
 endif
 
+ifneq (${PYLIB_LIB_PREFIX},)
+MY_CMAKE_FLAGS += -DPYLIB_LIB_PREFIX:BOOL=${PYLIB_LIB_PREFIX}
+endif
+
+ifneq (${PYLIB_INCLUDE_SONAME},)
+MY_CMAKE_FLAGS += -DPYLIB_INCLUDE_SONAME:BOOL=${PYLIB_INCLUDE_SONAME}
+endif
+
 ifneq (${USE_FFMPEG},)
 MY_CMAKE_FLAGS += -DUSE_FFMPEG:BOOL=${USE_FFMPEG}
 endif
@@ -119,6 +129,18 @@ endif
 
 ifneq (${USE_OPENJPEG},)
 MY_CMAKE_FLAGS += -DUSE_OPENJPEG:BOOL=${USE_OPENJPEG}
+endif
+
+ifneq (${OPENJPEG_HOME},)
+MY_CMAKE_FLAGS += -DOPENJPEG_HOME:STRING=${OPENJPEG_HOME}
+endif
+
+ifneq (${USE_JPEGTURBO},)
+MY_CMAKE_FLAGS += -DUSE_JPEGTURBO:BOOL=${USE_JPEGTURBO}
+endif
+
+ifneq (${JPEGTURBO_PATH},)
+MY_CMAKE_FLAGS += -DJPEGTURBO_PATH:STRING=${JPEGTURBO_PATH}
 endif
 
 ifneq (${USE_GIF},)
@@ -165,6 +187,10 @@ ifneq (${OPENEXR_HOME},)
 MY_CMAKE_FLAGS += -DOPENEXR_HOME:STRING=${OPENEXR_HOME}
 endif
 
+ifneq (${ILMBASE_HOME},)
+MY_CMAKE_FLAGS += -DILMBASE_HOME:STRING=${ILMBASE_HOME}
+endif
+
 ifneq (${OCIO_HOME},)
 MY_CMAKE_FLAGS += -DOCIO_PATH:STRING=${OCIO_HOME}
 endif
@@ -205,14 +231,6 @@ ifneq (${SOVERSION},)
 MY_CMAKE_FLAGS += -DSOVERSION:STRING=${SOVERSION}
 endif
 
-ifneq (${PYLIB_LIB_PREFIX},)
-MY_CMAKE_FLAGS += -DPYLIB_LIB_PREFIX:BOOL=${PYLIB_LIB_PREFIX}
-endif
-
-ifneq (${PYLIB_INCLUDE_SONAME},)
-MY_CMAKE_FLAGS += -DPYLIB_INCLUDE_SONAME:BOOL=${PYLIB_INCLUDE_SONAME}
-endif
-
 ifneq (${BUILD_OIIOUTIL_ONLY},)
 MY_CMAKE_FLAGS += -DBUILD_OIIOUTIL_ONLY:BOOL=${BUILD_OIIOUTIL_ONLY}
 endif
@@ -232,16 +250,12 @@ ifneq (${MYCXX},)
 MY_CMAKE_FLAGS += -DCMAKE_CXX_COMPILER:STRING="${MYCXX}"
 endif
 
-ifneq (${USE_CPP11},)
-MY_CMAKE_FLAGS += -DOIIO_BUILD_CPP11:BOOL=${USE_CPP11}
-endif
-
-ifneq (${USE_CPP14},)
-MY_CMAKE_FLAGS += -DOIIO_BUILD_CPP14:BOOL=${USE_CPP14}
+ifneq (${USE_CPP},)
+MY_CMAKE_FLAGS += -DUSE_CPP=${USE_CPP}
 endif
 
 ifneq (${USE_LIBCPLUSPLUS},)
-MY_CMAKE_FLAGS += -DOIIO_BUILD_LIBCPLUSPLUS:BOOL=${USE_LIBCPLUSPLUS}
+MY_CMAKE_FLAGS += -DUSE_LIBCPLUSPLUS:BOOL=${USE_LIBCPLUSPLUS}
 endif
 
 ifneq (${EXTRA_CPP_ARGS},)
@@ -268,6 +282,30 @@ endif
 ifneq (${CODECOV},)
 MY_CMAKE_FLAGS += -DCMAKE_BUILD_TYPE:STRING=Debug -DCODECOV:BOOL=${CODECOV}
 endif
+
+ifneq (${SANITIZE},)
+MY_CMAKE_FLAGS += -DSANITIZE=${SANITIZE}
+endif
+
+ifneq (${CLANG_TIDY},)
+  MY_CMAKE_FLAGS += -DCLANG_TIDY:BOOL=1
+endif
+ifneq (${CLANG_TIDY_CHECKS},)
+  MY_CMAKE_FLAGS += -DCLANG_TIDY_CHECKS:STRING=${CLANG_TIDY_CHECKS}
+endif
+ifneq (${CLANG_TIDY_ARGS},)
+  MY_CMAKE_FLAGS += -DCLANG_TIDY_ARGS:STRING=${CLANG_TIDY_ARGS}
+endif
+ifneq (${CLANG_TIDY_FIX},)
+  MY_CMAKE_FLAGS += -DCLANG_TIDY_FIX:BOOL=${CLANG_TIDY_FIX}
+  MY_NINJA_FLAGS += -j 1
+  # N.B. when fixing, you don't want parallel jobs!
+endif
+
+ifneq (${USE_FREETYPE},)
+MY_CMAKE_FLAGS += -DUSE_FREETYPE:BOOL=${USE_FREETYPE}
+endif
+
 
 #$(info MY_CMAKE_FLAGS = ${MY_CMAKE_FLAGS})
 #$(info MY_MAKE_FLAGS = ${MY_MAKE_FLAGS})
@@ -298,7 +336,7 @@ cmakesetup:
 	@ (if [ ! -e ${build_dir}/${BUILDSENTINEL} ] ; then \
 		${CMAKE} -E make_directory ${build_dir} ; \
 		cd ${build_dir} ; \
-		${CMAKE} -DCMAKE_INSTALL_PREFIX=${INSTALLDIR}/${dist_dir} \
+		${CMAKE} -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} \
 			${MY_CMAKE_FLAGS} -DBOOST_ROOT=${BOOST_HOME} \
 			../.. ; \
 	 fi)
@@ -356,7 +394,7 @@ TEST_FLAGS += --force-new-ctest-process --output-on-failure
 test: cmake
 	@ ${CMAKE} -E cmake_echo_color --switch=$(COLOR) --cyan "Running tests ${TEST_FLAGS}..."
 	@ # if [ "${CODECOV}" == "1" ] ; then lcov -b ${build_dir} -d ${build_dir} -z ; rm -rf ${build_dir}/cov ; fi
-	@ ( cd ${build_dir} ; PYTHONPATH=${PWD}/${build_dir}/src/python ctest  ${TEST_FLAGS} -E broken )
+	@ ( cd ${build_dir} ; PYTHONPATH=${PWD}/${build_dir}/src/python ctest -E broken ${TEST_FLAGS} )
 	@ ( if [ "${CODECOV}" == "1" ] ; then \
 	      cd ${build_dir} ; \
 	      lcov -b . -d . -c -o cov.info ; \
@@ -393,17 +431,14 @@ doxygen:
 # 'make help' prints important make targets
 help:
 	@echo "Targets:"
-	@echo "  make              Build optimized binaries and libraries in ${dist_dir},"
-	@echo "                        temporary build files in ${build_dir}"
-	@echo "  make debug        Build unoptimized with symbols in ${dist_dir}.debug,"
-	@echo "                        temporary build files in ${build_dir}.debug"
-	@echo "  make profile      Build for profiling in ${dist_dir}.profile,"
-	@echo "                        temporary build files in ${build_dir}.profile"
+	@echo "  make              Build optimized binaries and libraries"
+	@echo "  make debug        Build unoptimized with symbols"
+	@echo "  make profile      Build for profiling"
 	@echo "  make clean        Remove the temporary files in ${build_dir}"
 	@echo "  make realclean    Remove both ${build_dir} AND ${dist_dir}"
 	@echo "  make nuke         Remove ALL of build and dist (not just ${platform})"
 	@echo "  make test         Run tests"
-	@echo "  make testall      Run all tets, even broken ones"
+	@echo "  make testall      Run all tests, even broken ones"
 	@echo "  make doxygen      Build the Doxygen docs in ${top_build_dir}/doxygen"
 	@echo ""
 	@echo "Helpful modifiers:"
@@ -412,13 +447,15 @@ help:
 	@echo "      STOP_ON_WARNING=0        Do not stop building if compiler warns"
 	@echo "      OPENIMAGEIO_SITE=xx      Use custom site build mods"
 	@echo "      MYCC=xx MYCXX=yy         Use custom compilers"
-	@echo "      USE_CPP11=0              Compile in C++11 mode (=0 means use CPP03!)"
-	@echo "      USE_CPP14=1              Compile in C++14 mode"
+	@echo "      USE_CPP=14               Compile in C++14 mode (default is C++11)"
 	@echo "      USE_LIBCPLUSPLUS=1       Use clang libc++"
 	@echo "      EXTRA_CPP_ARGS=          Additional args to the C++ command"
 	@echo "      USE_NINJA=1              Set up Ninja build (instead of make)"
 	@echo "      USE_CCACHE=0             Disable ccache (even if available)"
 	@echo "      CODECOV=1                Enable code coverage tests"
+	@echo "      SANITIZE=name1,...       Enable sanitizers (address, leak, thread)"
+	@echo "      CLANG_TIDY=1             Run clang-tidy on all source (can be modified"
+	@echo "                                  by CLANG_TIDY_ARGS=... and CLANG_TIDY_FIX=1"
 	@echo "  Linking and libraries:"
 	@echo "      HIDE_SYMBOLS=1           Hide symbols not in the public API"
 	@echo "      SOVERSION=nn             Include the specifed major version number "
@@ -428,6 +465,7 @@ help:
 	@echo "  Finding and Using Dependencies:"
 	@echo "      BOOST_HOME=path          Custom Boost installation"
 	@echo "      OPENEXR_HOME=path        Custom OpenEXR installation"
+	@echo "      ILMBASE_HOME=path        Custom IlmBase installation"
 	@echo "      USE_EXTERNAL_PUGIXML=1   Use the system PugiXML, not the one in OIIO"
 	@echo "      USE_QT=0                 Skip anything that needs Qt"
 	@echo "      USE_OPENGL=0             Skip anything that needs OpenGL"
@@ -438,6 +476,8 @@ help:
 	@echo "      USE_FIELD3D=0            Don't build the Field3D plugin"
 	@echo "      FIELD3D_HOME=path        Custom Field3D installation"
 	@echo "      USE_FFMPEG=0             Don't build the FFmpeg plugin"
+	@echo "      USE_JPEGTURBO=0          Don't build the JPEG-Turbo even if found"
+	@echo "      JPEGTURBO_PATH=path      Custom path for JPEG-Turbo"
 	@echo "      USE_OPENJPEG=0           Don't build the JPEG-2000 plugin"
 	@echo "      USE_GIF=0                Don't build the GIF plugin"
 	@echo "      GIF_DIR=path             Custom GIFLIB installation"
@@ -446,21 +486,21 @@ help:
 	@echo "      USE_NUKE=0               Don't build Nuke plugins"
 	@echo "      NUKE_HOME=path           Custom Nuke installation"
 	@echo "      NUKE_VERSION=ver         Custom Nuke version"
-#	@echo "      USE_OPENSSL=1            Use OpenSSL's SHA-1 implementation"
 	@echo "      USE_LIBRAW=0             Don't use LibRaw, even if found"
 	@echo "      LIBRAW_PATH=path         Custom LibRaw installation"
 	@echo "      USE_OPENCV=0             Skip anything that needs OpenCV"
 	@echo "      USE_PTEX=0               Skip anything that needs PTex"
+	@echo "      USE_FREETYPE=0           Skip anything that needs Freetype"
 	@echo "  OIIO build-time options:"
-	@echo "      NAMESPACE=name           Wrap everything in another namespace"
+	@echo "      INSTALL_PREFIX=path      Set installation prefix (default: ./${INSTALL_PREFIX_BRIEF})"
+	@echo "      NAMESPACE=name           Override namespace base name (default: OpenImageIO)"
 	@echo "      EMBEDPLUGINS=0           Don't compile the plugins into libOpenImageIO"
-	@echo "      NOTHREADS=1              Build with threading support turned off"
 	@echo "      OIIO_THREAD_ALLOW_DCLP=0 Don't allow threads.h to use DCLP"
 	@echo "      OIIO_BUILD_TOOLS=0       Skip building the command-line tools"
 	@echo "      OIIO_BUILD_TESTS=0       Skip building the unit tests"
 	@echo "      BUILD_OIIOUTIL_ONLY=1    Build *only* libOpenImageIO_Util"
 	@echo "      USE_SIMD=arch            Build with SIMD support (choices: 0, sse2, sse3,"
-	@echo "                                  ssse3, sse4.1, sse4.2, f16c,"
+	@echo "                                  ssse3, sse4.1, sse4.2, f16c, avx, avx2"
 	@echo "                                  comma-separated ok)"
 	@echo "  make test, extra options:"
 	@echo "      TEST=regex               Run only tests matching the regex"

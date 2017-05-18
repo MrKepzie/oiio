@@ -40,7 +40,7 @@
 #include <OpenImageIO/imagebufalgo_util.h>
 #include <OpenImageIO/argparse.h>
 
-OIIO_NAMESPACE_USING;
+using namespace OIIO;
 
 static int iterations = 10;
 static int ntrials = 5;
@@ -122,6 +122,8 @@ test_int_helpers ()
     OIIO_CHECK_EQUAL (round_to_multiple(4, 5), 5);
     OIIO_CHECK_EQUAL (round_to_multiple(5, 5), 5);
     OIIO_CHECK_EQUAL (round_to_multiple(6, 5), 10);
+    OIIO_CHECK_EQUAL (round_to_multiple(size_t(5), 5), 5);
+    OIIO_CHECK_EQUAL (round_to_multiple(size_t(6), 5), 10);
 
     // round_to_multiple_of_pow2
     OIIO_CHECK_EQUAL (round_to_multiple_of_pow2(int(1), 4), 4);
@@ -189,7 +191,7 @@ void benchmark_convert_type ()
     std::cout << Strutil::format("Benchmark conversion of %6s -> %6s : ",
                                  TypeDesc(BaseTypeFromC<S>::value),
                                  TypeDesc(BaseTypeFromC<D>::value));
-    float time = time_trial (bind (do_convert_type<S,D>, OIIO::cref(svec), OIIO::ref(dvec)),
+    float time = time_trial (bind (do_convert_type<S,D>, std::cref(svec), std::ref(dvec)),
                              ntrials, iterations) / iterations;
     std::cout << Strutil::format ("%7.1f Mvals/sec", (size/1.0e6)/time) << std::endl;
     D r = convert_type<S,D>(testval);
@@ -219,9 +221,51 @@ void test_bit_range_convert ()
 
 
 
+static void test_interpolate_linear ()
+{
+    std::cout << "\nTesting interpolate_linear\n";
+
+    // Test simple case of 2 knots
+    float knots2[] = { 1.0f, 2.0f };
+    OIIO_CHECK_EQUAL (interpolate_linear (0.0f, knots2),  1.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (0.25f, knots2), 1.25f);
+    OIIO_CHECK_EQUAL (interpolate_linear (0.0f, knots2),  1.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (1.0f, knots2),  2.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (-0.1f, knots2), 1.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (1.1f, knots2),  2.0f);
+    float inf = std::numeric_limits<float>::infinity();
+    float nan = std::numeric_limits<float>::quiet_NaN();
+    OIIO_CHECK_EQUAL (interpolate_linear (-inf, knots2), 1.0f); // Test -inf
+    OIIO_CHECK_EQUAL (interpolate_linear (inf, knots2), 2.0f); // Test inf
+    OIIO_CHECK_EQUAL (interpolate_linear (nan, knots2), 1.0f); // Test nan
+
+    // More complex case of many knots
+    float knots4[] = { 1.0f, 2.0f, 4.0f, 6.0f };
+    OIIO_CHECK_EQUAL (interpolate_linear (-0.1f, knots4), 1.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (0.0f, knots4), 1.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (1.0f/3.0f, knots4), 2.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (0.5f, knots4), 3.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (5.0f/6.0f, knots4), 5.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (1.0f, knots4), 6.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (1.1f, knots4), 6.0f);
+
+    // Make sure it all works for strided arrays, too
+    float knots4_strided[] = { 1.0f, 0.0f, 2.0f, 0.0f, 4.0f, 0.0f, 6.0f, 0.0f };
+    array_view_strided<const float> a (knots4_strided, 4, 2);
+    OIIO_CHECK_EQUAL (interpolate_linear (-0.1f, a), 1.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (0.0f, a), 1.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (1.0f/3.0f, a), 2.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (0.5f, a), 3.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (5.0f/6.0f, a), 5.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (1.0f, a), 6.0f);
+    OIIO_CHECK_EQUAL (interpolate_linear (1.1f, a), 6.0f);
+}
+
+
+
 int main (int argc, char *argv[])
 {
-#if !defined(NDEBUG) || defined(OIIO_TRAVIS) || defined(OIIO_CODECOV)
+#if !defined(NDEBUG) || defined(OIIO_CI) || defined(OIIO_CODE_COVERAGE)
     // For the sake of test time, reduce the default iterations for DEBUG,
     // CI, and code coverage builds. Explicit use of --iters or --trials
     // will override this, since it comes before the getargs() call.
@@ -272,6 +316,8 @@ int main (int argc, char *argv[])
 //    test_convert_type<float,unsigned short> ();
 
     test_bit_range_convert();
+
+    test_interpolate_linear();
 
     return unit_test_failures != 0;
 }

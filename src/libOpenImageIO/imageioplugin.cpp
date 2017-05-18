@@ -34,13 +34,11 @@
 #include <string>
 #include <vector>
 
-#include <boost/foreach.hpp>
-
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/plugin.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/imageio.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/plugin.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/imageio.h>
 #include "imageio_pvt.h"
 
 
@@ -49,6 +47,7 @@ OIIO_NAMESPACE_BEGIN
 
 typedef std::map <std::string, ImageInput::Creator> InputPluginMap;
 typedef std::map <std::string, ImageOutput::Creator> OutputPluginMap;
+typedef const char* (*PluginLibVersionFunc) ();
 
 namespace {
 
@@ -64,8 +63,9 @@ static OutputPluginMap output_extensions;
 static std::map <std::string, Plugin::Handle> plugin_handles;
 // Map format name to full path
 static std::map <std::string, std::string> plugin_filepaths;
+// Map format name to underlying implementation library
+static std::map <std::string, std::string> format_library_versions;
 
-// FIXME -- do we use the extensions above?
 
 
 static std::string pattern = Strutil::format (".imageio.%s",
@@ -90,7 +90,8 @@ declare_imageio_format (const std::string &format_name,
                         ImageInput::Creator input_creator,
                         const char **input_extensions,
                         ImageOutput::Creator output_creator,
-                        const char **output_extensions)
+                        const char **output_extensions,
+                        const char *lib_version)
 {
     std::vector<std::string> all_extensions;
     // Look for input creator and list of supported extensions
@@ -128,10 +129,27 @@ declare_imageio_format (const std::string &format_name,
     if (format_list.length())
         format_list += std::string(",");
     format_list += format_name;
+    if (input_creator) {
+        if (input_format_list.length())
+            input_format_list += std::string(",");
+        input_format_list += format_name;
+    }
+    if (output_creator) {
+        if (output_format_list.length())
+            output_format_list += std::string(",");
+        output_format_list += format_name;
+    }
     if (extension_list.length())
         extension_list += std::string(";");
     extension_list += format_name + std::string(":");
     extension_list += Strutil::join(all_extensions, ",");
+    if (lib_version) {
+        format_library_versions[format_name] = lib_version;
+        if (library_list.length())
+            library_list += std::string(";");
+        library_list += Strutil::format ("%s:%s", format_name, lib_version);
+        // std::cout << format_name << ": " << lib_version << "\n";
+    }
 }
 
 
@@ -148,10 +166,10 @@ catalog_plugin (const std::string &format_name,
             // It's ok if they're both the same file; just skip it.
             return;
         }
-        OIIO::debugmsg ("OpenImageIO WARNING: %s had multiple plugins:\n"
-                        "\t\"%s\"\n    as well as\n\t\"%s\"\n"
-                        "    Ignoring all but the first one.\n",
-                        format_name, found_path->second, plugin_fullpath);
+        OIIO::debug ("OpenImageIO WARNING: %s had multiple plugins:\n"
+                     "\t\"%s\"\n    as well as\n\t\"%s\"\n"
+                     "    Ignoring all but the first one.\n",
+                     format_name, found_path->second, plugin_fullpath);
         return;
     }
 
@@ -166,6 +184,10 @@ catalog_plugin (const std::string &format_name,
         Plugin::close (handle);
         return;
     }
+
+    std::string lib_version_function = format_name + "_imageio_library_version";
+    PluginLibVersionFunc plugin_lib_version =
+        (PluginLibVersionFunc) Plugin::getsym (handle, lib_version_function.c_str());
 
     // Add the filepath and handle to the master lists
     plugin_filepaths[format_name] = plugin_fullpath;
@@ -182,7 +204,8 @@ catalog_plugin (const std::string &format_name,
 
     if (input_creator || output_creator)
         declare_imageio_format (format_name, input_creator, input_extensions,
-                                output_creator, output_extensions);
+                                output_creator, output_extensions,
+                                plugin_lib_version ? plugin_lib_version() : NULL);
     else
         Plugin::close (handle);   // not useful
 }
@@ -199,11 +222,17 @@ catalog_plugin (const std::string &format_name,
     ImageInput *name ## _input_imageio_create ();       \
     ImageOutput *name ## _output_imageio_create ();     \
     extern const char *name ## _output_extensions[];    \
-    extern const char *name ## _input_extensions[];
+    extern const char *name ## _input_extensions[];     \
+    extern const char *name ## _imageio_library_version();
+#define PLUGENTRY_RO(name)                               \
+    ImageInput *name ## _input_imageio_create ();       \
+    extern const char *name ## _input_extensions[];     \
+    extern const char *name ## _imageio_library_version();
 
     PLUGENTRY (bmp);
     PLUGENTRY (cineon);
     PLUGENTRY (dds);
+    PLUGENTRY_RO (dicom);
     PLUGENTRY (dpx);
     PLUGENTRY (ffmpeg);
     PLUGENTRY (field3d);
@@ -217,13 +246,13 @@ catalog_plugin (const std::string &format_name,
     PLUGENTRY (openexr);
     PLUGENTRY (png);
     PLUGENTRY (pnm);
-    PLUGENTRY (psd);
-    PLUGENTRY (ptex);
-    PLUGENTRY (raw);
+    PLUGENTRY_RO (psd);
+    PLUGENTRY_RO (ptex);
+    PLUGENTRY_RO (raw);
     PLUGENTRY (rla);
     PLUGENTRY (sgi);
     PLUGENTRY (socket);
-    PLUGENTRY (softimage);
+    PLUGENTRY_RO (softimage);
     PLUGENTRY (tiff);
     PLUGENTRY (targa);
     PLUGENTRY (webp);
@@ -249,14 +278,24 @@ catalog_builtin_plugins ()
                    (ImageInput::Creator) name ## _input_imageio_create,   \
                    name ## _input_extensions,                             \
                    (ImageOutput::Creator) name ## _output_imageio_create, \
-                   name ## _output_extensions)
+                   name ## _output_extensions,                            \
+                   name ## _imageio_library_version())
+#define DECLAREPLUG_RO(name)                                              \
+    declare_imageio_format (#name,                                        \
+                   (ImageInput::Creator) name ## _input_imageio_create,   \
+                   name ## _input_extensions,                             \
+                   NULL, NULL,                                            \
+                   name ## _imageio_library_version())
 
     DECLAREPLUG (bmp);
-    DECLAREPLUG (cineon);
-    DECLAREPLUG (dds);
+    DECLAREPLUG_RO (cineon);
+    DECLAREPLUG_RO (dds);
+#ifdef USE_DCMTK
+    DECLAREPLUG_RO (dicom);
+#endif
     DECLAREPLUG (dpx);
 #ifdef USE_FFMPEG
-    DECLAREPLUG (ffmpeg);
+    DECLAREPLUG_RO (ffmpeg);
 #endif
 #ifdef USE_FIELD3D
     DECLAREPLUG (field3d);
@@ -275,19 +314,19 @@ catalog_builtin_plugins ()
     DECLAREPLUG (openexr);
     DECLAREPLUG (png);
     DECLAREPLUG (pnm);
-    DECLAREPLUG (psd);
+    DECLAREPLUG_RO (psd);
 #ifdef USE_PTEX
-    DECLAREPLUG (ptex);
+    DECLAREPLUG_RO (ptex);
 #endif
 #ifdef USE_LIBRAW
-    DECLAREPLUG (raw);
+    DECLAREPLUG_RO (raw);
 #endif
     DECLAREPLUG (rla);
     DECLAREPLUG (sgi);
 #ifdef USE_BOOST_ASIO
     DECLAREPLUG (socket);
 #endif
-    DECLAREPLUG (softimage);
+    DECLAREPLUG_RO (softimage);
     DECLAREPLUG (tiff);
     DECLAREPLUG (targa);
 #ifdef USE_WEBP
@@ -339,10 +378,10 @@ pvt::catalog_all_plugins (std::string searchpath)
     size_t patlen = pattern.length();
     std::vector<std::string> dirs;
     Filesystem::searchpath_split (searchpath, dirs, true);
-    BOOST_FOREACH (const std::string &dir, dirs) {
+    for (const auto &dir : dirs) {
         std::vector<std::string> dir_entries;
         Filesystem::get_directory_entries (dir, dir_entries);
-        BOOST_FOREACH (const std::string &full_filename, dir_entries) {
+        for (const auto  &full_filename : dir_entries) {
             std::string leaf = Filesystem::filename (full_filename);
             size_t found = leaf.find (pattern);
             if (found != std::string::npos &&
@@ -404,7 +443,13 @@ ImageOutput::create (const std::string &filename,
     }
 
     ASSERT (create_function != NULL);
-    return (ImageOutput *) create_function();
+    ImageOutput *out = NULL;
+    try {
+        out = (ImageOutput *) create_function();
+    } catch (...) {
+        // Safety in case the ctr throws an exception
+    }
+    return out;
 }
 
 
@@ -517,7 +562,12 @@ ImageInput::create (const std::string &filename,
             formats_tried.push_back (plugin->second);  // remember
 
             ImageSpec tmpspec;
-            ImageInput *in = plugin->second();
+            ImageInput *in = NULL;
+            try {
+                in = plugin->second();
+            } catch (...) {
+                // Safety in case the ctr throws an exception
+            }
             if (! in)
                 continue;
             if (! do_open && ! in->valid_file(filename)) {
@@ -551,8 +601,7 @@ ImageInput::create (const std::string &filename,
         else if (! specific_error.empty()) {
             // Pass along any specific error message we got from our
             // best guess of the format.
-            pvt::error ("OpenImageIO could not open \"%s\" as %s: %s",
-                        filename.c_str(), format.c_str(), specific_error.c_str());
+            pvt::error ("%s", specific_error);
         }
         else if (Filesystem::exists (filename))
             pvt::error ("OpenImageIO could not find a format reader for \"%s\". "

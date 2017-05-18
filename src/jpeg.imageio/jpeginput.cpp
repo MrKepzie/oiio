@@ -33,10 +33,10 @@
 #include <cstdio>
 #include <algorithm>
 
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/fmath.h"
-#include "OpenImageIO/color.h"
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/color.h>
 #include "jpeg_pvt.h"
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
@@ -49,6 +49,15 @@ OIIO_PLUGIN_NAMESPACE_BEGIN
 OIIO_PLUGIN_EXPORTS_BEGIN
 
     OIIO_EXPORT int jpeg_imageio_version = OIIO_PLUGIN_VERSION;
+    OIIO_EXPORT const char* jpeg_imageio_library_version () {
+#define STRINGIZE2(a) #a
+#define STRINGIZE(a) STRINGIZE2(a)
+#ifdef LIBJPEG_TURBO_VERSION
+        return "jpeg-turbo " STRINGIZE(LIBJPEG_TURBO_VERSION);
+#else
+        return "jpeglib " STRINGIZE(JPEG_LIB_VERSION_MAJOR) "." STRINGIZE(JPEG_LIB_VERSION_MINOR);
+#endif
+    }
     OIIO_EXPORT ImageInput *jpeg_input_imageio_create () {
         return new JpgInput;
     }
@@ -265,7 +274,7 @@ JpgInput::open (const std::string &name, ImageSpec &newspec)
                 ! strcmp ((const char *)m->data, "Exif")) {
             // The block starts with "Exif\0\0", so skip 6 bytes to get
             // to the start of the actual Exif data TIFF directory
-            decode_exif ((unsigned char *)m->data+6, m->data_length-6, m_spec);
+            decode_exif (string_view((char *)m->data+6, m->data_length-6), m_spec);
         }
         else if (m->marker == (JPEG_APP0+1) &&
                  ! strcmp ((const char *)m->data, "http://ns.adobe.com/xap/1.0/")) {
@@ -281,7 +290,7 @@ JpgInput::open (const std::string &name, ImageSpec &newspec)
         else if (m->marker == JPEG_COM) {
             if (! m_spec.find_attribute ("ImageDescription", TypeDesc::STRING))
                 m_spec.attribute ("ImageDescription",
-                                  std::string ((const char *)m->data));
+                                  std::string ((const char *)m->data, m->data_length));
         }
     }
 

@@ -31,10 +31,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
-#include <errno.h>
+#include <cerrno>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 
 #include <OpenEXR/ImfOutputFile.h>
 #include <OpenEXR/ImfTiledOutputFile.h>
@@ -56,6 +57,7 @@
 #include <OpenEXR/ImfBoxAttribute.h>
 #include <OpenEXR/ImfEnvmapAttribute.h>
 #include <OpenEXR/ImfCompressionAttribute.h>
+#include <OpenEXR/ImfChromaticitiesAttribute.h>
 #include <OpenEXR/ImfCRgbaFile.h>  // JUST to get symbols to figure out version!
 #include <OpenEXR/IexBaseExc.h>
 #include <OpenEXR/IexThrowErrnoExc.h>
@@ -78,16 +80,14 @@
 #include <OpenEXR/ImfDoubleAttribute.h>
 #endif
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/deepdata.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/sysutil.h"
-#include "OpenImageIO/fmath.h"
-
-#include <boost/scoped_ptr.hpp>
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/deepdata.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/thread.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/sysutil.h>
+#include <OpenImageIO/fmath.h>
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
@@ -102,32 +102,20 @@ public:
     OpenEXROutputStream (const char *filename) : Imf::OStream(filename) {
         // The reason we have this class is for this line, so that we
         // can correctly handle UTF-8 file paths on Windows
-        {
-            std::ostream* rawhandle;
-            Filesystem::open (&rawhandle, filename, std::ios_base::binary);
-            if (rawhandle) {
-                ofs.reset(rawhandle);
-            }
-        }
-        if (!ofs)
+        Filesystem::open (ofs, filename, std::ios_base::binary);
+        if (!ofs) 	
             Iex::throwErrnoExc ();
     }
     virtual void write (const char c[], int n) {
-        if (!ofs) {
-            Iex::throwErrnoExc ();
-        }
         errno = 0;
-        ofs->write (c, n);
+        ofs.write (c, n);
         check_error ();
     }
     virtual Imath::Int64 tellp () {
-        return ofs ? std::streamoff (ofs->tellp ()) : 0;
+        return std::streamoff (ofs.tellp ());
     }
     virtual void seekp (Imath::Int64 pos) {
-        if (!ofs) {
-            Iex::throwErrnoExc ();
-        }
-        ofs->seekp (pos);
+        ofs.seekp (pos);
         check_error ();
     }
 
@@ -139,7 +127,7 @@ private:
             throw Iex::ErrnoExc ("File output failed.");
         }
     }
-    boost::scoped_ptr<std::ostream> ofs;
+    OIIO::ofstream ofs;
 };
 
 
@@ -174,21 +162,21 @@ public:
                                    const DeepData &deepdata);
 
 private:
-    OpenEXROutputStream *m_output_stream; ///< Stream for output file
-    Imf::OutputFile *m_output_scanline;   ///< Input for scanline files
-    Imf::TiledOutputFile *m_output_tiled; ///< Input for tiled files
+    std::unique_ptr<OpenEXROutputStream> m_output_stream; ///< Stream for output file
+    std::unique_ptr<Imf::OutputFile> m_output_scanline;   ///< Input for scanline files
+    std::unique_ptr<Imf::TiledOutputFile> m_output_tiled; ///< Input for tiled files
 #ifdef USE_OPENEXR_VERSION2
-    Imf::MultiPartOutputFile *m_output_multipart;
-    Imf::OutputPart *m_scanline_output_part;
-    Imf::TiledOutputPart *m_tiled_output_part;
-    Imf::DeepScanLineOutputPart *m_deep_scanline_output_part;
-    Imf::DeepTiledOutputPart *m_deep_tiled_output_part;
+    std::unique_ptr<Imf::MultiPartOutputFile> m_output_multipart;
+    std::unique_ptr<Imf::OutputPart> m_scanline_output_part;
+    std::unique_ptr<Imf::TiledOutputPart> m_tiled_output_part;
+    std::unique_ptr<Imf::DeepScanLineOutputPart> m_deep_scanline_output_part;
+    std::unique_ptr<Imf::DeepTiledOutputPart> m_deep_tiled_output_part;
 #else
-    char *m_output_multipart;
-    char *m_scanline_output_part;
-    char *m_tiled_output_part;
-    char *m_deep_scanline_output_part;
-    char *m_deep_tiled_output_part;
+    std::unique_ptr<char> m_output_multipart;
+    std::unique_ptr<char> m_scanline_output_part;
+    std::unique_ptr<char> m_tiled_output_part;
+    std::unique_ptr<char> m_deep_scanline_output_part;
+    std::unique_ptr<char> m_deep_tiled_output_part;
 #endif
     int m_levelmode;                      ///< The level mode of the file
     int m_roundingmode;                   ///< Rounding mode of the file
@@ -207,11 +195,11 @@ private:
         m_output_stream = NULL;
         m_output_scanline = NULL;
         m_output_tiled = NULL;
-        m_output_multipart = NULL;
-        m_scanline_output_part = NULL;
-        m_tiled_output_part = NULL;
-        m_deep_scanline_output_part = NULL;
-        m_deep_tiled_output_part = NULL;
+        m_output_multipart.reset();
+        m_scanline_output_part.reset();
+        m_tiled_output_part.reset();
+        m_deep_scanline_output_part.reset();
+        m_deep_tiled_output_part.reset();
         m_subimage = -1;
         m_miplevel = -1;
         std::vector<ImageSpec>().swap (m_subimagespecs);  // clear and free
@@ -232,6 +220,10 @@ private:
     // Decode the IlmImf MIP parameters from the spec.
     static void figure_mip (const ImageSpec &spec, int &nmiplevels,
                             int &levelmode, int &roundingmode);
+
+    // Helper: if the channel names are nonsensical, fix them to keep the
+    // app from shooting itself in the foot.
+    void sanity_check_channelnames ();
 };
 
 
@@ -247,6 +239,14 @@ openexr_output_imageio_create ()
 }
 
 OIIO_EXPORT int openexr_imageio_version = OIIO_PLUGIN_VERSION;
+
+OIIO_EXPORT const char* openexr_imageio_library_version () {
+#ifdef OPENEXR_PACKAGE_STRING
+    return OPENEXR_PACKAGE_STRING;
+#else
+    return "OpenEXR 1.x";
+#endif
+}
 
 OIIO_EXPORT const char * openexr_output_extensions[] = {
     "exr", "sxr", "mxr", NULL
@@ -284,14 +284,14 @@ OpenEXROutput::~OpenEXROutput ()
     // Close, if not already done.
     close ();
 
-    delete m_output_scanline;  m_output_scanline = NULL;
-    delete m_output_tiled;  m_output_tiled = NULL;
-    delete m_scanline_output_part;  m_scanline_output_part = NULL;
-    delete m_tiled_output_part;  m_tiled_output_part = NULL;
-    delete m_deep_scanline_output_part;  m_deep_scanline_output_part = NULL;
-    delete m_deep_tiled_output_part;  m_deep_tiled_output_part = NULL;
-    delete m_output_multipart;  m_output_multipart = NULL;
-    delete m_output_stream;  m_output_stream = NULL;
+    m_output_scanline.reset ();
+    m_output_tiled.reset ();
+    m_scanline_output_part.reset ();
+    m_tiled_output_part.reset ();
+    m_deep_scanline_output_part.reset ();
+    m_deep_tiled_output_part.reset ();
+    m_output_multipart.reset ();
+    m_output_stream.reset ();
 }
 
 
@@ -357,18 +357,19 @@ OpenEXROutput::open (const std::string &name, const ImageSpec &userspec,
         m_miplevel = 0;
         m_headers.resize (1);
         m_spec = userspec;  // Stash the spec
+        sanity_check_channelnames ();
 
         if (! spec_to_header (m_spec, m_subimage, m_headers[m_subimage]))
             return false;
 
         try {
-            m_output_stream = new OpenEXROutputStream (name.c_str());
+            m_output_stream.reset (new OpenEXROutputStream (name.c_str()));
             if (m_spec.tile_width) {
-                m_output_tiled = new Imf::TiledOutputFile (*m_output_stream,
-                                                           m_headers[m_subimage]);
+                m_output_tiled.reset (new Imf::TiledOutputFile (*m_output_stream,
+                                                           m_headers[m_subimage]));
             } else {
-                m_output_scanline = new Imf::OutputFile (*m_output_stream,
-                                                         m_headers[m_subimage]);
+                m_output_scanline.reset (new Imf::OutputFile (*m_output_stream,
+                                                         m_headers[m_subimage]));
             }
         } catch (const std::exception &e) {
             error ("OpenEXR exception: %s", e.what());
@@ -406,36 +407,34 @@ OpenEXROutput::open (const std::string &name, const ImageSpec &userspec,
         // Close the current subimage, open the next one
         try {
             if (m_tiled_output_part) {
-                delete m_tiled_output_part;
-                m_tiled_output_part = new Imf::TiledOutputPart (*m_output_multipart, m_subimage);
+                m_tiled_output_part.reset (new Imf::TiledOutputPart (*m_output_multipart, m_subimage));
             } else if (m_scanline_output_part) {
-                delete m_scanline_output_part;
-                m_scanline_output_part = new Imf::OutputPart (*m_output_multipart, m_subimage);
+                m_scanline_output_part.reset (new Imf::OutputPart (*m_output_multipart, m_subimage));
             } else if (m_deep_tiled_output_part) {
-                delete m_deep_tiled_output_part;
-                m_deep_tiled_output_part = new Imf::DeepTiledOutputPart (*m_output_multipart, m_subimage);
+                m_deep_tiled_output_part.reset (new Imf::DeepTiledOutputPart (*m_output_multipart, m_subimage));
             } else if (m_deep_scanline_output_part) {
-                delete m_deep_scanline_output_part;
-                m_deep_scanline_output_part = new Imf::DeepScanLineOutputPart (*m_output_multipart, m_subimage);
+                m_deep_scanline_output_part.reset (new Imf::DeepScanLineOutputPart (*m_output_multipart, m_subimage));
             } else {
-                ASSERT (0);
+                error ("Called open with AppendSubimage mode, but no appropriate part is found. Application bug?");
+                return false;
             }
         } catch (const std::exception &e) {
             error ("OpenEXR exception: %s", e.what());
-            m_scanline_output_part = NULL;
-            m_tiled_output_part = NULL;
-            m_deep_scanline_output_part = NULL;
-            m_deep_tiled_output_part = NULL;
+            m_scanline_output_part.reset ();
+            m_tiled_output_part.reset ();
+            m_deep_scanline_output_part.reset ();
+            m_deep_tiled_output_part.reset ();
             return false;
         } catch (...) {   // catch-all for edge cases or compiler bugs
             error ("OpenEXR exception: unknown exception");
-            m_scanline_output_part = NULL;
-            m_tiled_output_part = NULL;
-            m_deep_scanline_output_part = NULL;
-            m_deep_tiled_output_part = NULL;
+            m_scanline_output_part.reset ();
+            m_tiled_output_part.reset ();
+            m_deep_scanline_output_part.reset ();
+            m_deep_tiled_output_part.reset ();
             return false;
         }
         m_spec = m_subimagespecs[m_subimage];
+        sanity_check_channelnames ();
         compute_pixeltypes(m_spec);
         return true;
 #else
@@ -472,7 +471,7 @@ OpenEXROutput::open (const std::string &name, const ImageSpec &userspec,
         }
     }
 
-    ASSERTMSG (0, "Unknown open mode %d", int(mode));
+    error ("Unknown open mode %d", int(mode));
     return false;
 }
 
@@ -521,58 +520,57 @@ OpenEXROutput::open (const std::string &name, int subimages,
     }
 
     m_spec = m_subimagespecs[0];
+    sanity_check_channelnames ();
     compute_pixeltypes(m_spec);
 
     // Create an ImfMultiPartOutputFile
     try {
-        // m_output_stream = new OpenEXROutputStream (name.c_str());
-        // m_output_multipart = new Imf::MultiPartOutputFile (*m_output_stream,
-        //                                          &m_headers[0], subimages);
+        // m_output_stream.reset (new OpenEXROutputStream (name.c_str())();
+        // m_output_multipart.reset (new Imf::MultiPartOutputFile (*m_output_stream,
+        //                                          &m_headers[0], subimages)();
         // FIXME: Oops, looks like OpenEXR 2.0 currently lacks a
         // MultiPartOutputFile ctr that takes an OStream, so we can't
         // do this quite yet.
-        m_output_multipart = new Imf::MultiPartOutputFile (name.c_str(),
-                                                 &m_headers[0], subimages);
+        m_output_multipart.reset (new Imf::MultiPartOutputFile (name.c_str(),
+                                                 &m_headers[0], subimages));
     } catch (const std::exception &e) {
-        delete m_output_stream;
-        m_output_stream = NULL;
+        m_output_stream.reset ();
         error ("OpenEXR exception: %s", e.what());
         return false;
     } catch (...) {   // catch-all for edge cases or compiler bugs
-        delete m_output_stream;
-        m_output_stream = NULL;
+        m_output_stream.reset ();
         error ("OpenEXR exception: unknown exception");
         return false;
     }
     try {
         if (deep) {
             if (m_spec.tile_width) {
-                m_deep_tiled_output_part = new Imf::DeepTiledOutputPart (*m_output_multipart, 0);
+                m_deep_tiled_output_part.reset (new Imf::DeepTiledOutputPart (*m_output_multipart, 0));
             } else {
-                m_deep_scanline_output_part = new Imf::DeepScanLineOutputPart (*m_output_multipart, 0);
+                m_deep_scanline_output_part.reset (new Imf::DeepScanLineOutputPart (*m_output_multipart, 0));
             }
         } else {
             if (m_spec.tile_width) {
-                m_tiled_output_part = new Imf::TiledOutputPart (*m_output_multipart, 0);
+                m_tiled_output_part.reset (new Imf::TiledOutputPart (*m_output_multipart, 0));
             } else {
-                m_scanline_output_part = new Imf::OutputPart (*m_output_multipart, 0);
+                m_scanline_output_part.reset (new Imf::OutputPart (*m_output_multipart, 0));
             }
         }
     } catch (const std::exception &e) {
         error ("OpenEXR exception: %s", e.what());
-        delete m_output_stream;  m_output_stream = NULL;
-        m_scanline_output_part = NULL;
-        m_tiled_output_part = NULL;
-        m_deep_scanline_output_part = NULL;
-        m_deep_tiled_output_part = NULL;
+        m_output_stream.reset();
+        m_scanline_output_part.reset();
+        m_tiled_output_part.reset();
+        m_deep_scanline_output_part.reset();
+        m_deep_tiled_output_part.reset();
         return false;
     } catch (...) {  // catch-all for edge cases or compiler bugs
         error ("OpenEXR exception: unknown exception");
-        delete m_output_stream;  m_output_stream = NULL;
-        m_scanline_output_part = NULL;
-        m_tiled_output_part = NULL;
-        m_deep_scanline_output_part = NULL;
-        m_deep_tiled_output_part = NULL;
+        m_output_stream.reset();
+        m_scanline_output_part.reset();
+        m_tiled_output_part.reset();
+        m_deep_scanline_output_part.reset();
+        m_deep_tiled_output_part.reset();
         return false;
     }
 
@@ -696,14 +694,31 @@ OpenEXROutput::spec_to_header (ImageSpec &spec, int subimage, Imf::Header &heade
 #endif
     }
 
-    // Default to ZIP compression if no request came with the user spec.
-    if (! spec.find_attribute("compression"))
-        spec.attribute ("compression", "zip");
-
+    // See what compression has been requested, default to ZIP compression
+    // if no request came with the user spec.
+    string_view compression = spec.get_string_attribute ("compression", "zip");
     // It seems that zips is the only compression that can reliably work
-    // on deep files.
-    if (spec.deep)
-        spec.attribute ("compression", "zips");
+    // on deep files (but allow "none" as well)
+    if (spec.deep && compression != "none")
+        compression = "zips";
+    // Separate any appended quality from the name
+    size_t sep = compression.find_first_of (":");
+    if (sep != compression.npos) {
+        string_view qual = compression.substr (sep+1);
+        compression = compression.substr (0, sep);
+        if (qual.size() && Strutil::istarts_with (compression, "dwa")) {
+            float q = Strutil::from_string<float>(qual);
+            q = clamp (q, 10.0f, 250000.0f);  // useful range
+            spec.attribute ("openexr:dwaCompressionLevel", q);
+        }
+    }
+    spec.attribute ("compression", compression);
+
+    // If compression is one of the DWA types and no compression level
+    // was set, default to 45.
+    if (Strutil::istarts_with (compression, "dwa") &&
+        ! spec.find_attribute("openexr:dwaCompressionLevel"))
+        spec.attribute ("openexr:dwaCompressionLevel", 45.0f);
 
     // Default to increasingY line order
     if (! spec.find_attribute("openexr:lineOrder"))
@@ -715,7 +730,7 @@ OpenEXROutput::spec_to_header (ImageSpec &spec, int subimage, Imf::Header &heade
         time (&now);
         struct tm mytm;
         Sysutil::get_local_time (&now, &mytm);
-        std::string date = Strutil::format ("%4d:%02d:%02d %2d:%02d:%02d",
+        std::string date = Strutil::format ("%4d:%02d:%02d %02d:%02d:%02d",
                                mytm.tm_year+1900, mytm.tm_mon+1, mytm.tm_mday,
                                mytm.tm_hour, mytm.tm_min, mytm.tm_sec);
         spec.attribute ("DateTime", date);
@@ -733,7 +748,7 @@ OpenEXROutput::spec_to_header (ImageSpec &spec, int subimage, Imf::Header &heade
     // Fix up density and aspect to be consistent
     float aspect = spec.get_float_attribute ("PixelAspectRatio", 0.0f);
     float xdensity = spec.get_float_attribute ("XResolution", 0.0f);
-    float ydensity = spec.get_float_attribute ("XResolution", 0.0f);
+    float ydensity = spec.get_float_attribute ("YResolution", 0.0f);
     if (! aspect && xdensity && ydensity) {
         // No aspect ratio. Compute it from density, if supplied.
         spec.attribute ("PixelAspectRatio", xdensity / ydensity);
@@ -994,8 +1009,8 @@ OpenEXROutput::put_parameter (const std::string &name, TypeDesc type,
     // Now if we still don't match a specific type OpenEXR is looking for,
     // skip it.
     if (exrtype != TypeDesc() && ! exrtype.equivalent(type)) {
-        OIIO::debugmsg ("OpenEXR output metadata \"%s\" type mismatch: expected %s, got %s\n",
-                        name, exrtype, type);
+        OIIO::debug ("OpenEXR output metadata \"%s\" type mismatch: expected %s, got %s\n",
+                     name, exrtype, type);
         return false;
     }
 
@@ -1053,8 +1068,8 @@ OpenEXROutput::put_parameter (const std::string &name, TypeDesc type,
                     return true;
                 case TypeDesc::STRING:
                     Imf::StringVector v;
-                    v.push_back(((const char **)data)[0]);
-                    v.push_back(((const char **)data)[1]);
+                    v.emplace_back(((const char **)data)[0]);
+                    v.emplace_back(((const char **)data)[1]);
                     header.insert (xname.c_str(), Imf::StringVectorAttribute (v));
                     return true;
 #endif
@@ -1076,9 +1091,9 @@ OpenEXROutput::put_parameter (const std::string &name, TypeDesc type,
                     return true;
                 case TypeDesc::STRING:
                     Imf::StringVector v;
-                    v.push_back(((const char **)data)[0]);
-                    v.push_back(((const char **)data)[1]);
-                    v.push_back(((const char **)data)[2]);
+                    v.emplace_back(((const char **)data)[0]);
+                    v.emplace_back(((const char **)data)[1]);
+                    v.emplace_back(((const char **)data)[2]);
                     header.insert (xname.c_str(), Imf::StringVectorAttribute (v));
                     return true;
 #endif
@@ -1203,12 +1218,20 @@ OpenEXROutput::put_parameter (const std::string &name, TypeDesc type,
 #endif
             }
         }
+        if (type.basetype == TypeDesc::FLOAT && type.aggregate * type.arraylen == 8
+            && Strutil::iequals (xname, "chromaticities")) {
+            const float *f = (const float *)data;
+            Imf::Chromaticities c (Imath::V2f(f[0], f[1]), Imath::V2f(f[2], f[3]),
+                                   Imath::V2f(f[4], f[5]), Imath::V2f(f[6], f[7]));
+            header.insert ("chromaticities", Imf::ChromaticitiesAttribute (c));
+            return true;
+        }
 #ifdef USE_OPENEXR_VERSION2
         // String Vector
         if (type.basetype == TypeDesc::STRING) {
             Imf::StringVector v;
             for (int i=0; i<type.arraylen; i++) {
-                v.push_back(((const char **)data)[i]);
+                v.emplace_back(((const char **)data)[i]);
             }
             header.insert (xname.c_str(), Imf::StringVectorAttribute (v));
             return true;
@@ -1216,13 +1239,33 @@ OpenEXROutput::put_parameter (const std::string &name, TypeDesc type,
 #endif
     }
     } catch (const std::exception &e) {
-        OIIO::debugmsg ("Caught OpenEXR exception: %s\n", e.what());
+        OIIO::debug ("Caught OpenEXR exception: %s\n", e.what());
     } catch (...) {  // catch-all for edge cases or compiler bugs
-        OIIO::debugmsg ("Caught unknown OpenEXR exception\n");
+        OIIO::debug ("Caught unknown OpenEXR exception\n");
     }
 
-    OIIO::debugmsg ("Don't know what to do with %s %s\n", type, xname);
+    OIIO::debug ("Don't know what to do with %s %s\n", type, xname);
     return false;
+}
+
+
+
+void
+OpenEXROutput::sanity_check_channelnames ()
+{
+    m_spec.channelnames.resize (m_spec.nchannels, "");
+    for (int c = 1; c < m_spec.nchannels; ++c) {
+        for (int i = 0; i < c; ++i) {
+            if (m_spec.channelnames[c].empty() ||
+                m_spec.channelnames[c] == m_spec.channelnames[i]) {
+                // Duplicate or missing channel name! We don't want
+                // libIlmImf to drop the channel (as it will do for
+                // duplicates), so rename it and hope for the best.
+                m_spec.channelnames[c] = Strutil::format ("channel%d", c);
+                break;
+            }
+        }
+    }
 }
 
 
@@ -1241,12 +1284,12 @@ OpenEXROutput::close ()
         return true;
     }
 
-    delete m_output_scanline;  m_output_scanline = NULL;
-    delete m_output_tiled;  m_output_tiled = NULL;
-    delete m_scanline_output_part;  m_scanline_output_part = NULL;
-    delete m_tiled_output_part;  m_tiled_output_part = NULL;
-    delete m_output_multipart;  m_output_multipart = NULL;
-    delete m_output_stream;  m_output_stream = NULL;
+    m_output_scanline.reset();
+    m_output_tiled.reset();
+    m_scanline_output_part.reset();
+    m_tiled_output_part.reset();
+    m_output_multipart.reset();
+    m_output_stream.reset();
 
     init ();      // re-initialize
     return true;  // How can we fail?
@@ -1300,7 +1343,8 @@ OpenEXROutput::write_scanline (int y, int z, TypeDesc format,
             m_scanline_output_part->writePixels (1);
 #endif
         } else {
-            ASSERT (0);
+            error ("Attempt to write scanline to a non-scanline file.");
+            return false;
         }
     } catch (const std::exception &e) {
         error ("Failed OpenEXR write: %s", e.what());
@@ -1377,7 +1421,8 @@ OpenEXROutput::write_scanlines (int ybegin, int yend, int z,
                 m_scanline_output_part->writePixels (nscanlines);
 #endif
             } else {
-                ASSERT (0);
+                error ("Attempt to write scanlines to a non-scanline file.");
+                return false;
             }
         } catch (const std::exception &e) {
             error ("Failed OpenEXR write: %s", e.what());
@@ -1507,7 +1552,8 @@ OpenEXROutput::write_tiles (int xbegin, int xend, int ybegin, int yend,
                                              m_miplevel, m_miplevel);
 #endif
         } else {
-            ASSERT (0);
+            error ("Attempt to write tiles for a non-tiled file.");
+            return false;
         }
     } catch (const std::exception &e) {
         error ("Failed OpenEXR write: %s", e.what());

@@ -29,7 +29,7 @@
 */
 
 
-#include <math.h>
+#include <cmath>
 #include <string>
 #include <sstream>
 #include <cstring>
@@ -38,22 +38,22 @@
 #include <OpenEXR/half.h>
 #include <OpenEXR/ImathMatrix.h>
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/typedesc.h"
-#include "OpenImageIO/varyingref.h"
-#include "OpenImageIO/ustring.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/sysutil.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/fmath.h"
-#include "OpenImageIO/simd.h"
-#include "OpenImageIO/filter.h"
-#include "OpenImageIO/optparser.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/texture.h"
-#include "OpenImageIO/imagecache.h"
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/imagebufalgo.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/typedesc.h>
+#include <OpenImageIO/varyingref.h>
+#include <OpenImageIO/ustring.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/sysutil.h>
+#include <OpenImageIO/thread.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/simd.h>
+#include <OpenImageIO/filter.h>
+#include <OpenImageIO/optparser.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/texture.h>
+#include <OpenImageIO/imagecache.h>
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
 #include <boost/random.hpp>
 #include "imagecache_pvt.h"
 #include "texture_pvt.h"
@@ -343,6 +343,7 @@ TextureSystemImpl::init ()
 {
     m_Mw2c.makeIdentity();
     m_gray_to_rgb = false;
+    m_flip_t = false;
     m_max_tile_channels = 5;
     delete hq_filter;
     hq_filter = Filter1D::create ("b-spline", 4);
@@ -388,6 +389,7 @@ TextureSystemImpl::getstats (int level, bool icstats) const
 #define INTOPT(name) opt += Strutil::format(#name "=%d ", m_##name)
 #define STROPT(name) if (m_##name.size()) opt += Strutil::format(#name "=\"%s\" ", m_##name)
         INTOPT(gray_to_rgb);
+        INTOPT(flip_t);
         INTOPT(max_tile_channels);
 #undef BOOLOPT
 #undef INTOPT
@@ -467,6 +469,10 @@ TextureSystemImpl::attribute (string_view name, TypeDesc type,
         m_gray_to_rgb = *(const int *)val;
         return true;
     }
+    if (name == "flip_t" && type == TypeDesc::TypeInt) {
+        m_flip_t = *(const int *)val;
+        return true;
+    }
     if (name == "m_max_tile_channels" && type == TypeDesc::TypeInt) {
         m_max_tile_channels = *(const int *)val;
         return true;
@@ -501,6 +507,10 @@ TextureSystemImpl::getattribute (string_view name, TypeDesc type,
         *(int *)val = m_gray_to_rgb;
         return true;
     }
+    if (name == "flip_t" && type == TypeDesc::TypeInt) {
+        *(int *)val = m_flip_t;
+        return true;
+    }
     if (name == "m_max_tile_channels" && type == TypeDesc::TypeInt) {
         *(int *)val = m_max_tile_channels;
         return true;
@@ -528,8 +538,11 @@ TextureSystemImpl::get_texture_info (ustring filename, int subimage,
 {
     bool ok = m_imagecache->get_image_info (filename, subimage, 0,
                                             dataname, datatype, data);
-    if (! ok)
-        error ("%s", m_imagecache->geterror());
+    if (! ok) {
+        std::string err = m_imagecache->geterror();
+        if (!err.empty())
+            error ("%s", err);
+    }
     return ok;
 }
 
@@ -544,8 +557,11 @@ TextureSystemImpl::get_texture_info (TextureHandle *texture_handle,
                                             (ImageCache::Perthread *)thread_info,
                                             subimage, 0,
                                             dataname, datatype, data);
-    if (! ok)
-        error ("%s", m_imagecache->geterror());
+    if (! ok) {
+        std::string err = m_imagecache->geterror();
+        if (!err.empty())
+            error ("%s", err);
+    }
     return ok;
 }
 
@@ -556,8 +572,11 @@ TextureSystemImpl::get_imagespec (ustring filename, int subimage,
                                   ImageSpec &spec)
 {
     bool ok = m_imagecache->get_imagespec (filename, spec, subimage);
-    if (! ok)
-        error ("%s", m_imagecache->geterror());
+    if (! ok) {
+        std::string err = m_imagecache->geterror();
+        if (!err.empty())
+            error ("%s", err);
+    }
     return ok;
 }
 
@@ -571,8 +590,11 @@ TextureSystemImpl::get_imagespec (TextureHandle *texture_handle,
     bool ok = m_imagecache->get_imagespec ((ImageCache::ImageHandle *)texture_handle,
                                            (ImageCache::Perthread *)thread_info,
                                            spec, subimage);
-    if (! ok)
-        error ("%s", m_imagecache->geterror());
+    if (! ok) {
+        std::string err = m_imagecache->geterror();
+        if (!err.empty())
+            error ("%s", err);
+    }
     return ok;
 }
 
@@ -596,8 +618,11 @@ TextureSystemImpl::imagespec (TextureHandle *texture_handle,
     const ImageSpec *spec =
         m_imagecache->imagespec ((ImageCache::ImageHandle *)texture_handle,
                                  (ImageCache::Perthread *)thread_info, subimage);
-    if (! spec)
-        error ("%s", m_imagecache->geterror());
+    if (! spec) {
+        std::string err = m_imagecache->geterror();
+        if (!err.empty())
+            error ("%s", err);
+    }
     return spec;
 }
 
@@ -616,7 +641,8 @@ TextureSystemImpl::get_texels (ustring filename, TextureOpt &options,
         error ("Texture file \"%s\" not found", filename);
         return false;
     }
-    return get_texels (filename, options, miplevel, xbegin, xend,
+    return get_texels ((TextureHandle *)texfile, (Perthread *)thread_info,
+                       options, miplevel, xbegin, xend,
                        ybegin, yend, zbegin, zend, chbegin, chend,
                        format, result);
 }
@@ -639,7 +665,8 @@ TextureSystemImpl::get_texels (TextureHandle *texture_handle_,
     }
 
     if (texfile->broken()) {
-        error ("Invalid texture file \"%s\"", texfile->filename());
+        if (texfile->errors_should_issue())
+            error ("Invalid texture file \"%s\"", texfile->filename());
         return false;
     }
     int subimage = options.subimage;
@@ -649,8 +676,9 @@ TextureSystemImpl::get_texels (TextureHandle *texture_handle_,
         return false;
     }
     if (miplevel < 0 || miplevel >= texfile->miplevels(subimage)) {
-        error ("get_texel asked for nonexistant MIP level %d of \"%s\"",
-               miplevel, texfile->filename());
+        if (texfile->errors_should_issue())
+            error ("get_texel asked for nonexistant MIP level %d of \"%s\"",
+                   miplevel, texfile->filename());
         return false;
     }
     const ImageSpec &spec (texfile->spec(subimage, miplevel));
@@ -715,8 +743,11 @@ TextureSystemImpl::get_texels (TextureHandle *texture_handle_,
             }
         }
     }
-    if (! ok)
-        error ("%s", m_imagecache->geterror());
+    if (! ok) {
+        std::string err = m_imagecache->geterror();
+        if (! err.empty())
+            error ("%s", err);
+    }
     return ok;
 }
 
@@ -941,7 +972,12 @@ TextureSystemImpl::texture (TextureHandle *texture_handle_,
     texture_lookup_prototype lookup = lookup_functions[(int)options.mipmode];
 
     PerThreadInfo *thread_info = m_imagecache->get_perthread_info((PerThreadInfo *)thread_info_);
-    TextureFile *texturefile = verify_texturefile ((TextureFile *)texture_handle_, thread_info);
+    TextureFile *texturefile = (TextureFile *)texture_handle_;
+    if (texturefile->is_udim())
+        texturefile = m_imagecache->resolve_udim (texturefile, s, t);
+
+    texturefile = verify_texturefile (texturefile, thread_info);
+
     ImageCacheStatistics &stats (thread_info->m_stats);
     ++stats.texture_batches;
     ++stats.texture_queries;
@@ -997,6 +1033,12 @@ TextureSystemImpl::texture (TextureHandle *texture_handle_,
         return true;
     }
 
+    if (m_flip_t) {
+        t = 1.0f - t;
+        dtdx *= -1.0f;
+        dtdy *= -1.0f;
+    }
+
     if (! subinfo.full_pixel_range) {  // remap st for overscan or crop
         s = s * subinfo.sscale + subinfo.soffset;
         dsdx *= subinfo.sscale;
@@ -1011,8 +1053,11 @@ TextureSystemImpl::texture (TextureHandle *texture_handle_,
     // is space for a float4 in all of the result locations, so if that's
     // not the case (or it's not properly aligned), make a local copy and
     // then copy back when we're done.
+    // FIXME -- is this necessary at all? Can we eliminate the conditional
+    // and the duplicated code by always doing the simd copy thing? Come
+    // back here and time whether for 4-channnel textures it really matters.
     bool simd_copy = (nchannels != 4 || ((size_t)result&0x0f) ||
-                      ((size_t)dresultds & 0x0f) ||
+                      ((size_t)dresultds & 0x0f) || /* FIXME -- necessary? */
                       ((size_t)dresultdt & 0x0f));
     if (simd_copy) {
         simd::float4 result_simd, dresultds_simd, dresultdt_simd;
@@ -1031,6 +1076,8 @@ TextureSystemImpl::texture (TextureHandle *texture_handle_,
                                 dresultds, dresultdt);
         result_simd.store (result, nchannels);
         if (saved_dresultds) {
+            if (m_flip_t)
+                dresultdt_simd = -dresultdt_simd;
             dresultds_simd.store (saved_dresultds, nchannels);
             dresultdt_simd.store (saved_dresultdt, nchannels);
         }
@@ -1043,6 +1090,8 @@ TextureSystemImpl::texture (TextureHandle *texture_handle_,
         if (actualchannels < nchannels && options.firstchannel == 0 && m_gray_to_rgb)
             fill_gray_channels (spec, nchannels, result,
                                 dresultds, dresultdt);
+        if (m_flip_t && dresultdt)
+            *(float4 *)dresultdt = -(*(float4 *)dresultdt);
     }
 
     return ok;
@@ -1200,7 +1249,7 @@ compute_miplevels (TextureSystemImpl::TextureFile &texturefile,
         if (filtwidth_ras <= 1.0f) {
             miplevel[0] = m-1;
             miplevel[1] = m;
-            levelblend = Imath::clamp (2.0f - 1.0f/filtwidth_ras, 0.0f, 1.0f);
+            levelblend = Imath::clamp (2.0f*filtwidth_ras - 1.0f, 0.0f, 1.0f);
             break;
         }
     }
@@ -2429,6 +2478,16 @@ TextureSystemImpl::sample_bicubic (int nsamples, const float *s_,
         } else {
             wx = evalBSplineWeights (float4(sfrac));
             wy = evalBSplineWeights (float4(tfrac));
+#if (defined(__i386__) && !defined(__x86_64__)) || defined(__aarch64__)
+            // Some platforms complain here about these being uninitialized,
+            // so initialize them. Don't waste the cycles for platforms that
+            // don't seem to have that error. It's a false positive -- this
+            // code really is safe without the initialization, but that
+            // doesn't seem to get figured out on some platforms (even when
+            // running the same gcc version).
+            dwx = float4::Zero();
+            dwy = float4::Zero();
+#endif
         }
 
         // figure out lerp weights so we can turn the filter into a sequence of lerp's
@@ -2547,7 +2606,7 @@ TextureSystemImpl::visualize_ellipse (const std::string &name,
     int w = 256, h = 256;
     ImageSpec spec (w, h, 3);
     ImageBuf ib (spec);
-    static float dark[3] = { 0.2, 0.2, 0.2 };
+    static float dark[3] = { 0.2f, 0.2f, 0.2f };
     static float white[3] = { 1, 1, 1 };
     static float grey[3] = { 0.5, 0.5, 0.5 };
     static float red[3] = { 1, 0, 0 };

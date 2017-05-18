@@ -30,10 +30,10 @@
 
 #include <cstdio>
 
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/unittest.h"
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/unittest.h>
 
-OIIO_NAMESPACE_USING;
+using namespace OIIO;
 using namespace Strutil;
 
 
@@ -50,6 +50,10 @@ void test_format ()
 
     // Test '+' format modifier
     OIIO_CHECK_EQUAL (Strutil::format ("%+d%+d%+d", 3, -3, 0), "+3-3+0");
+
+    // Test single string with no args
+    OIIO_CHECK_EQUAL (Strutil::format ("foo"), "foo");
+    OIIO_CHECK_EQUAL (Strutil::format ("%%foo"), "%foo");
 
     // FIXME -- we should make comprehensive tests here
 }
@@ -81,7 +85,7 @@ void test_timeintervalformat ()
 
 void test_get_rest_arguments ()
 {
-    int ret;
+    bool ret;
     std::map <std::string, std::string> result;
     std::string base;
     std::string url = "someplace?arg1=value1&arg2=value2";
@@ -276,10 +280,10 @@ void test_split ()
 void test_join ()
 {
     std::vector<std::string> seq;
-    seq.push_back ("Now");
-    seq.push_back ("is");
-    seq.push_back ("the");
-    seq.push_back ("time");
+    seq.emplace_back("Now");
+    seq.emplace_back("is");
+    seq.emplace_back("the");
+    seq.emplace_back("time");
     OIIO_CHECK_EQUAL (Strutil::join (seq, ". "),
                       "Now. is. the. time");
 }
@@ -293,6 +297,29 @@ void test_repeat ()
     OIIO_CHECK_EQUAL (Strutil::repeat("foo",1), "foo");
     OIIO_CHECK_EQUAL (Strutil::repeat("foo",0), "");
     OIIO_CHECK_EQUAL (Strutil::repeat("foo",-1), "");
+}
+
+
+
+void test_replace ()
+{
+    std::cout << "Testing replace\n";
+    std::string pattern ("Red rose, red rose, end.");
+    // Replace start
+    OIIO_CHECK_EQUAL (Strutil::replace(pattern, "Red", "foo"),
+                      "foo rose, red rose, end.");
+    // Replace end
+    OIIO_CHECK_EQUAL (Strutil::replace(pattern, "end.", "foo"),
+                      "Red rose, red rose, foo");
+    // Pattern not found
+    OIIO_CHECK_EQUAL (Strutil::replace(pattern, "bar", "foo"),
+                      pattern);
+    // One replacement
+    OIIO_CHECK_EQUAL (Strutil::replace(pattern, "rose", "foo"),
+                      "Red foo, red rose, end.");
+    // Global replacement
+    OIIO_CHECK_EQUAL (Strutil::replace(pattern, "rose", "foo", true),
+                      "Red foo, red foo, end.");
 }
 
 
@@ -515,6 +542,16 @@ void test_parse ()
     s = "fl$orp 14";  ss = parse_identifier (s, "$:", true);
     OIIO_CHECK_ASSERT (ss == "fl$orp" && s == " 14");
 
+    bool b;
+    s = " foo bar"; b = parse_identifier_if (s, "bar");
+    OIIO_CHECK_ASSERT (b == false && s == " foo bar");
+    s = " foo bar"; b = parse_identifier_if (s, "foo");
+    OIIO_CHECK_ASSERT (b == true && s == " bar");
+    s = " foo_14 bar"; b = parse_identifier_if (s, "foo");
+    OIIO_CHECK_ASSERT (b == false && s == " foo_14 bar");
+    s = " foo_14 bar"; b = parse_identifier_if (s, "foo_14");
+    OIIO_CHECK_ASSERT (b == true && s == " bar");
+
     s = "foo;bar blow"; ss = parse_until (s, ";");
     OIIO_CHECK_ASSERT (ss == "foo" && s == ";bar blow");
     s = "foo;bar blow"; ss = parse_until (s, "\t ");
@@ -549,10 +586,10 @@ test_float_formatting ()
         sprintf (buffer, "%.9g", *f);
         std::string tiny = Strutil::format ("%.9g", *f);
         if (sstream.str() != tiny || tiny != buffer)
-            printf ("%x  stream '%s'  printf '%s'  Strutil::format '%s'\n",
-                    i32, sstream.str().c_str(), buffer, tiny.c_str());
+            Strutil::printf ("%x  stream '%s'  printf '%s'  Strutil::format '%s'\n",
+                    i32, sstream.str(), buffer, tiny);
         if ((i32 & 0xfffffff) == 0xfffffff) {
-            printf ("%x\n", i32);
+            Strutil::printf ("%x\n", i32);
             fflush (stdout);
         }
     }
@@ -575,6 +612,7 @@ main (int argc, char *argv[])
     test_split ();
     test_join ();
     test_repeat ();
+    test_replace ();
     test_conversion ();
     test_extract ();
     test_safe_strcpy ();

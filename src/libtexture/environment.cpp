@@ -29,25 +29,25 @@
 */
 
 
-#include <math.h>
+#include <cmath>
 #include <string>
 #include <sstream>
 #include <list>
 
 #include <OpenEXR/ImathMatrix.h>
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/typedesc.h"
-#include "OpenImageIO/varyingref.h"
-#include "OpenImageIO/ustring.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/fmath.h"
-#include "OpenImageIO/filter.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/texture.h"
-#include "OpenImageIO/imagecache.h"
-#include "OpenImageIO/imagecache.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/typedesc.h>
+#include <OpenImageIO/varyingref.h>
+#include <OpenImageIO/ustring.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/thread.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/filter.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/texture.h>
+#include <OpenImageIO/imagecache.h>
+#include <OpenImageIO/imagecache.h>
 #include "imagecache_pvt.h"
 #include "texture_pvt.h"
 
@@ -498,7 +498,7 @@ TextureSystemImpl::environment (TextureHandle *texture_handle_,
             if (filtwidth_ras <= 1) {
                 miplevel[0] = m-1;
                 miplevel[1] = m;
-                levelblend = Imath::clamp (2.0f - 1.0f/filtwidth_ras, 0.0f, 1.0f);
+                levelblend = Imath::clamp (2.0f*filtwidth_ras - 1.0f, 0.0f, 1.0f);
                 break;
             }
         }

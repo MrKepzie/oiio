@@ -38,11 +38,11 @@
 #include <cmath>
 #include <iostream>
 
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/imagebufalgo.h"
-#include "OpenImageIO/imagebufalgo_util.h"
-#include "OpenImageIO/deepdata.h"
-#include "OpenImageIO/thread.h"
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
+#include <OpenImageIO/imagebufalgo_util.h>
+#include <OpenImageIO/deepdata.h>
+#include <OpenImageIO/thread.h>
 
 
 
@@ -107,47 +107,82 @@ ImageBufAlgo::paste (ImageBuf &dst, int xbegin, int ybegin,
 
 template<class D, class S>
 static bool
-crop_ (ImageBuf &dst, const ImageBuf &src,
+copy_ (ImageBuf &dst, const ImageBuf &src,
        ROI roi, int nthreads=1)
 {
-    if (nthreads != 1 && roi.npixels() >= 1000) {
-        // Lots of pixels and request for multi threads? Parallelize.
-        ImageBufAlgo::parallel_image (
-            OIIO::bind(crop_<D,S>, OIIO::ref(dst), OIIO::cref(src),
-                        _1 /*roi*/, 1 /*nthreads*/),
-            roi, nthreads);
-        return true;
-    }
+    using namespace ImageBufAlgo;
+    parallel_image (roi, nthreads, [&](ROI roi){
 
-    // Serial case
-
-    // Deep
     if (dst.deep()) {
+        DeepData &dstdeep (*dst.deepdata());
+        const DeepData &srcdeep (*src.deepdata());
         ImageBuf::ConstIterator<S,D> s (src, roi);
         for (ImageBuf::Iterator<D,D> d (dst, roi);  ! d.done();  ++d, ++s) {
-            int samples = d.deep_samples ();
+            int samples = s.deep_samples ();
+            // The caller should ALREADY have set the samples, since that
+            // is not thread-safe against the copying below.
+            // d.set_deep_samples (samples);
+            DASSERT (d.deep_samples() == samples);
             if (samples == 0)
                 continue;
-            for (int c = roi.chbegin;  c < roi.chend;  ++c)
-                for (int samp = 0; samp < samples; ++samp)
-                    d.set_deep_value (c, samp, (float)s.deep_value(c, samp));
+            for (int c = roi.chbegin;  c < roi.chend;  ++c) {
+                if (dstdeep.channeltype(c) == TypeDesc::UINT32 &&
+                        srcdeep.channeltype(c) == TypeDesc::UINT32)
+                    for (int samp = 0; samp < samples; ++samp)
+                        d.set_deep_value (c, samp, (uint32_t)s.deep_value_uint(c, samp));
+                else
+                    for (int samp = 0; samp < samples; ++samp)
+                        d.set_deep_value (c, samp, (float)s.deep_value(c, samp));
+            }
         }
-        return true;
+    } else {
+        ImageBuf::ConstIterator<S,D> s (src, roi);
+        ImageBuf::Iterator<D,D> d (dst, roi);
+        for ( ;  ! d.done();  ++d, ++s) {
+            for (int c = roi.chbegin;  c < roi.chend;  ++c)
+                d[c] = s[c];
+        }
     }
-    // Below is the non-deep case
 
-    ImageBuf::ConstIterator<S,D> s (src, roi);
-    ImageBuf::Iterator<D,D> d (dst, roi);
-    for ( ;  ! d.done();  ++d, ++s) {
-        for (int c = roi.chbegin;  c < roi.chend;  ++c)
-            d[c] = s[c];
-    }
+    });
     return true;
 }
 
 
+bool
+ImageBufAlgo::copy (ImageBuf &dst, const ImageBuf &src, TypeDesc convert,
+                    ROI roi, int nthreads)
+{
+    if (&dst == &src)   // trivial copy to self
+        return true;
 
-bool 
+    roi.chend = std::min (roi.chend, src.nchannels());
+    if (! dst.initialized()) {
+        ImageSpec newspec = src.spec();
+        set_roi (newspec, roi);
+        newspec.nchannels = roi.chend;
+        if (convert != TypeDesc::UNKNOWN)
+            newspec.set_format (convert);
+        dst.reset (newspec);
+    }
+    IBAprep (roi, &dst, &src, IBAprep_SUPPORT_DEEP);
+    if (dst.deep()) {
+        // If it's deep, figure out the sample allocations first, because
+        // it's not thread-safe to do that simultaneously with copying the
+        // values.
+        ImageBuf::ConstIterator<float> s (src, roi);
+        for (ImageBuf::Iterator<float> d (dst, roi);  !d.done();  ++d, ++s)
+            d.set_deep_samples (s.deep_samples());
+    }
+    bool ok;
+    OIIO_DISPATCH_TYPES2 (ok, "copy", copy_, dst.spec().format, src.spec().format,
+                          dst, src, roi, nthreads);
+    return ok;
+}
+
+
+
+bool
 ImageBufAlgo::crop (ImageBuf &dst, const ImageBuf &src,
                     ROI roi, int nthreads)
 {
@@ -157,14 +192,16 @@ ImageBufAlgo::crop (ImageBuf &dst, const ImageBuf &src,
         return false;
 
     if (dst.deep()) {
-        // If it's deep, figure out the sample allocations first
+        // If it's deep, figure out the sample allocations first, because
+        // it's not thread-safe to do that simultaneously with copying the
+        // values.
         ImageBuf::ConstIterator<float> s (src, roi);
         for (ImageBuf::Iterator<float> d (dst, roi);  !d.done();  ++d, ++s)
             d.set_deep_samples (s.deep_samples());
     }
 
     bool ok;
-    OIIO_DISPATCH_TYPES2 (ok, "crop", crop_, dst.spec().format, src.spec().format,
+    OIIO_DISPATCH_TYPES2 (ok, "crop", copy_, dst.spec().format, src.spec().format,
                           dst, src, roi, nthreads);
     return ok;
 }
@@ -523,26 +560,17 @@ static bool
 transpose_ (ImageBuf &dst, const ImageBuf &src,
             ROI roi, int nthreads)
 {
-    if (nthreads != 1 && roi.npixels() >= 1000) {
-        // Possible multiple thread case -- recurse via parallel_image
-        ImageBufAlgo::parallel_image (
-            OIIO::bind(transpose_<DSTTYPE,SRCTYPE>,
-                        OIIO::ref(dst), OIIO::cref(src),
-                        _1 /*roi*/, 1 /*nthreads*/),
-            roi, nthreads);
-        return true;
-    }
-
-    // Serial case
-    ImageBuf::ConstIterator<SRCTYPE,DSTTYPE> s (src, roi);
-    ImageBuf::Iterator<DSTTYPE,DSTTYPE> d (dst);
-    for (  ;  ! s.done();  ++s) {
-        d.pos (s.y(), s.x(), s.z());
-        if (! d.exists())
-            continue;
-        for (int c = roi.chbegin;  c < roi.chend;  ++c)
-            d[c] = s[c];
-    }
+    ImageBufAlgo::parallel_image (roi, nthreads, [&](ROI roi){
+        ImageBuf::ConstIterator<SRCTYPE,DSTTYPE> s (src, roi);
+        ImageBuf::Iterator<DSTTYPE,DSTTYPE> d (dst);
+        for (  ;  ! s.done();  ++s) {
+            d.pos (s.y(), s.x(), s.z());
+            if (! d.exists())
+                continue;
+            for (int c = roi.chbegin;  c < roi.chend;  ++c)
+                d[c] = s[c];
+        }
+    });
     return true;
 }
 
@@ -580,31 +608,21 @@ circular_shift_ (ImageBuf &dst, const ImageBuf &src,
                  int xshift, int yshift, int zshift,
                  ROI dstroi, ROI roi, int nthreads)
 {
-    if (nthreads != 1 && roi.npixels() >= 1000) {
-        // Possible multiple thread case -- recurse via parallel_image
-        ImageBufAlgo::parallel_image (
-            OIIO::bind(circular_shift_<DSTTYPE,SRCTYPE>,
-                        OIIO::ref(dst), OIIO::cref(src),
-                        xshift, yshift, zshift,
-                        dstroi, _1 /*roi*/, 1 /*nthreads*/),
-            roi, nthreads);
-        return true;
-    }
-
-    // Serial case
-    int width = dstroi.width(), height = dstroi.height(), depth = dstroi.depth();
-    ImageBuf::ConstIterator<SRCTYPE,DSTTYPE> s (src, roi);
-    ImageBuf::Iterator<DSTTYPE,DSTTYPE> d (dst);
-    for (  ;  ! s.done();  ++s) {
-        int dx = s.x() + xshift;  OIIO::wrap_periodic (dx, dstroi.xbegin, width);
-        int dy = s.y() + yshift;  OIIO::wrap_periodic (dy, dstroi.ybegin, height);
-        int dz = s.z() + zshift;  OIIO::wrap_periodic (dz, dstroi.zbegin, depth);
-        d.pos (dx, dy, dz);
-        if (! d.exists())
-            continue;
-        for (int c = roi.chbegin;  c < roi.chend;  ++c)
-            d[c] = s[c];
-    }
+    ImageBufAlgo::parallel_image (roi, nthreads, [&](ROI roi){
+        int width = dstroi.width(), height = dstroi.height(), depth = dstroi.depth();
+        ImageBuf::ConstIterator<SRCTYPE,DSTTYPE> s (src, roi);
+        ImageBuf::Iterator<DSTTYPE,DSTTYPE> d (dst);
+        for (  ;  ! s.done();  ++s) {
+            int dx = s.x() + xshift;  OIIO::wrap_periodic (dx, dstroi.xbegin, width);
+            int dy = s.y() + yshift;  OIIO::wrap_periodic (dy, dstroi.ybegin, height);
+            int dz = s.z() + zshift;  OIIO::wrap_periodic (dz, dstroi.zbegin, depth);
+            d.pos (dx, dy, dz);
+            if (! d.exists())
+                continue;
+            for (int c = roi.chbegin;  c < roi.chend;  ++c)
+                d[c] = s[c];
+        }
+    });
     return true;
 }
 
@@ -632,28 +650,20 @@ channels_ (ImageBuf &dst, const ImageBuf &src,
            const int *channelorder, const float *channelvalues,
            ROI roi, int nthreads=0)
 {
-    if (nthreads != 1 && roi.npixels() >= 64*1024) {
-        // Possible multiple thread case -- recurse via parallel_image
-        ImageBufAlgo::parallel_image (
-            OIIO::bind(channels_<DSTTYPE>, OIIO::ref(dst),
-                        OIIO::cref(src), channelorder, channelvalues,
-                        _1 /*roi*/, 1 /*ntheads*/),
-            roi, nthreads);
-        return true;
-    }
-
-    int nchannels = src.nchannels();
-    ImageBuf::ConstIterator<DSTTYPE> s (src, roi);
-    ImageBuf::Iterator<DSTTYPE> d (dst, roi);
-    for (  ;  ! s.done();  ++s, ++d) {
-        for (int c = roi.chbegin;  c < roi.chend;  ++c) {
-            int cc = channelorder[c];
-            if (cc >= 0 && cc < nchannels)
-                d[c] = s[cc];
-            else if (channelvalues)
-                d[c] = channelvalues[c];
+    ImageBufAlgo::parallel_image (roi, nthreads, [&](ROI roi){
+        int nchannels = src.nchannels();
+        ImageBuf::ConstIterator<DSTTYPE> s (src, roi);
+        ImageBuf::Iterator<DSTTYPE> d (dst, roi);
+        for (  ;  ! s.done();  ++s, ++d) {
+            for (int c = roi.chbegin;  c < roi.chend;  ++c) {
+                int cc = channelorder[c];
+                if (cc >= 0 && cc < nchannels)
+                    d[c] = s[cc];
+                else if (channelvalues)
+                    d[c] = channelvalues[c];
+            }
         }
-    }
+    });
     return true;
 }
 
@@ -785,20 +795,18 @@ ImageBufAlgo::channels (ImageBuf &dst, const ImageBuf &src,
 
 
 
-template<class ABtype>
+template<class Rtype, class ABtype>
 static bool
 channel_append_impl (ImageBuf &dst, const ImageBuf &A, const ImageBuf &B,
                      ROI roi, int nthreads)
 {
-    if (nthreads == 1 || roi.npixels() < 1000) {
+    ImageBufAlgo::parallel_image (roi, nthreads, [&](ROI roi){
         int na = A.nchannels(), nb = B.nchannels();
         int n = std::min (dst.nchannels(), na+nb);
-        ImageBuf::Iterator<float> r (dst, roi);
+        ImageBuf::Iterator<Rtype> r (dst, roi);
         ImageBuf::ConstIterator<ABtype> a (A, roi);
         ImageBuf::ConstIterator<ABtype> b (B, roi);
-        for (;  !r.done();  ++r) {
-            a.pos (r.x(), r.y(), r.z());
-            b.pos (r.x(), r.y(), r.z());
+        for (;  !r.done();  ++r, ++a, ++b) {
             for (int c = 0; c < n; ++c) {
                 if (c < na)
                     r[c] = a.exists() ? a[c] : 0.0f;
@@ -806,13 +814,7 @@ channel_append_impl (ImageBuf &dst, const ImageBuf &A, const ImageBuf &B,
                     r[c] = b.exists() ? b[c-na] : 0.0f;
             }
         }
-    } else {
-        // Possible multiple thread case -- recurse via parallel_image
-        ImageBufAlgo::parallel_image (
-            OIIO::bind (channel_append_impl<ABtype>, OIIO::ref(dst),
-                         OIIO::cref(A), OIIO::cref(B), _1, 1),
-            roi, nthreads);
-    }
+    });
     return true;
 }
 
@@ -836,9 +838,20 @@ ImageBufAlgo::channel_append (ImageBuf &dst, const ImageBuf &A,
         dstspec.nchannels = A.spec().nchannels + B.spec().nchannels;
         for (int c = 0;  c < B.spec().nchannels;  ++c) {
             std::string name = B.spec().channelnames[c];
-            // Eliminate duplicates
-            if (std::find(dstspec.channelnames.begin(), dstspec.channelnames.end(), name) != dstspec.channelnames.end())
+            // It's a duplicate channel name. This will wreak havoc for
+            // OpenEXR, so we need to choose a unique name.
+            if (std::find(dstspec.channelnames.begin(), dstspec.channelnames.end(), name) != dstspec.channelnames.end()) {
+                // First, let's see if the original image had a subimage
+                // name and use that.
+                std::string subname = B.spec().get_string_attribute("oiio:subimagename");
+                if (subname.size())
+                    name = subname + "." + name;
+            }
+            if (std::find(dstspec.channelnames.begin(), dstspec.channelnames.end(), name) != dstspec.channelnames.end()) {
+                // If it's still a duplicate, fall back on a totally
+                // artificial name that contains the channel number.
                 name = Strutil::format ("channel%d", A.spec().nchannels+c);
+            }
             dstspec.channelnames.push_back (name);
         }
         if (dstspec.alpha_channel < 0 && B.spec().alpha_channel >= 0)
@@ -849,18 +862,17 @@ ImageBufAlgo::channel_append (ImageBuf &dst, const ImageBuf &A,
         dst.reset (dstspec);
     }
 
-    // For now, only support float destination, and equivalent A and B
-    // types.
-    if (dst.spec().format != TypeDesc::FLOAT ||
-        A.spec().format != B.spec().format) {
+    // For now, only support A and B having the same type.
+    if (A.spec().format != B.spec().format) {
         dst.error ("Unable to perform channel_append of %s, %s -> %s",
                    A.spec().format, B.spec().format, dst.spec().format);
         return false;
     }
 
     bool ok;
-    OIIO_DISPATCH_TYPES (ok, "channel_append", channel_append_impl,
-                         A.spec().format, dst, A, B, roi, nthreads);
+    OIIO_DISPATCH_TYPES2 (ok, "channel_append", channel_append_impl,
+                          dst.spec().format, A.spec().format,
+                          dst, A, B, roi, nthreads);
     return ok;
 }
 

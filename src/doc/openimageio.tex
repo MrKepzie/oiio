@@ -8,7 +8,6 @@
 %\setlength{\evensidemargin}{0.5in}
 
 % don't do this \usepackage{times}    % Better fonts than Computer Modern
-%\usepackage{times}
 \renewcommand{\sfdefault}{phv}
 \renewcommand{\rmdefault}{ptm}
 % don't replace tt -- old is better \renewcommand{\ttdefault}{pcr}
@@ -22,7 +21,8 @@
 \usepackage{xspace}
 %\usepackage{multicol}
 %\usepackage{color}
-\usepackage{html}
+%\usepackage{html}
+\usepackage{hyperref}
 \usepackage{array}
 \usepackage{multirow}
 \usepackage{longtable}
@@ -46,7 +46,7 @@
 
 \def\product{{\sffamily OpenImageIO}\xspace}
 \def\OpenImageIO{{\sffamily OpenImageIO}\xspace}
-\def\versionnumber{1.7}
+\def\versionnumber{1.8}
 \def\productver{\product\ {\sffamily \versionnumber}\xspace}
 \def\producthome{{\codefont \$IMAGEIOHOME}\xspace}
 \def\ivbinary{{\codefont iv}\xspace}
@@ -87,15 +87,15 @@
 {\Huge{\bf \product}
 %\textregistered\ 
 {\bf\sffamily \versionnumber} \medskip \\ \huge Programmer Documentation
- \large (in progress)
+ \\ \large (in progress)
 } \bigskip }
 \author{Editor: Larry Gritz \\
 \emph{lg@openimageio.org}
  \bigskip \\
 }
-\date{{\large 
-Date: 9 Feb 2016
-%\\ (with corrections, 25 Aug 2015)
+\date{{\large
+Date: 9 May 2017
+%\\ (with corrections, 2 Mar 2017)
 }}
 
 

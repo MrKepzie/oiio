@@ -38,23 +38,23 @@
 #include <string>
 #include <utility>
 
-#include <boost/algorithm/string.hpp>
-#include <boost/foreach.hpp>
-#include <boost/regex.hpp>
-
-using boost::algorithm::iequals;
-
-
-#include "OpenImageIO/argparse.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/imagebufalgo.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/filter.h"
+#include <OpenImageIO/argparse.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/filter.h>
+#include <OpenImageIO/thread.h>
 
 #include "oiiotool.h"
 
-OIIO_NAMESPACE_USING
+#ifdef USE_BOOST_REGEX
+# include <boost/regex.hpp>
+#else
+# include <regex>
+#endif
+
+using namespace OIIO;
 using namespace OiioTool;
 using namespace ImageBufAlgo;
 
@@ -64,6 +64,7 @@ ImageRec::ImageRec (const std::string &name, int nsubimages,
                     const int *miplevels, const ImageSpec *specs)
     : m_name(name), m_elaborated(true),
       m_metadata_modified(false), m_pixels_modified(true),
+      m_was_output(false),
       m_imagecache(NULL)
 {
     int specnum = 0;
@@ -89,6 +90,7 @@ ImageRec::ImageRec (ImageRec &img, int subimage_to_copy,
                     int miplevel_to_copy, bool writable, bool copy_pixels)
     : m_name(img.name()), m_elaborated(true),
       m_metadata_modified(false), m_pixels_modified(false),
+      m_was_output(false),
       m_imagecache(img.m_imagecache)
 {
     img.read ();
@@ -115,7 +117,8 @@ ImageRec::ImageRec (ImageRec &img, int subimage_to_copy,
                 // The other image is not modified, and we don't need to be
                 // writable, either.
                 ib = new ImageBuf (img.name(), srcib.imagecache());
-                bool ok = ib->read (srcsub, srcmip);
+                bool ok = ib->read (srcsub, srcmip, false /*force*/,
+                                    img.m_input_dataformat /*convert*/);
                 ASSERT (ok);
             }
             m_subimages[s].m_miplevels[m].reset (ib);
@@ -131,6 +134,7 @@ ImageRec::ImageRec (ImageRec &A, ImageRec &B, int subimage_to_copy,
                     TypeDesc pixeltype)
     : m_name(A.name()), m_elaborated(true),
       m_metadata_modified(false), m_pixels_modified(false),
+      m_was_output(false),
       m_imagecache(A.m_imagecache)
 {
     A.read ();
@@ -188,6 +192,7 @@ ImageRec::ImageRec (ImageRec &A, ImageRec &B, int subimage_to_copy,
 ImageRec::ImageRec (ImageBufRef img, bool copy_pixels)
     : m_name(img->name()), m_elaborated(true),
       m_metadata_modified(false), m_pixels_modified(false),
+      m_was_output(false),
       m_imagecache(img->imagecache())
 {
     m_subimages.resize (1);
@@ -206,6 +211,7 @@ ImageRec::ImageRec (const std::string &name, const ImageSpec &spec,
                     ImageCache *imagecache)
     : m_name(name), m_elaborated(true),
       m_metadata_modified(false), m_pixels_modified(true),
+      m_was_output(false),
       m_imagecache(imagecache)
 {
     int subimages = 1;
@@ -225,12 +231,11 @@ ImageRec::ImageRec (const std::string &name, const ImageSpec &spec,
 
 
 bool
-ImageRec::read (bool force_native_read)
+ImageRec::read (ReadPolicy readpolicy, string_view channel_set)
 {
     if (elaborated())
         return true;
     static ustring u_subimages("subimages"), u_miplevels("miplevels");
-    static boost::regex regex_sha ("SHA-1=[[:xdigit:]]*[ ]*");
     int subimages = 0;
     ustring uname (name());
     if (! m_imagecache->get_image_info (uname, 0, 0, u_subimages,
@@ -239,7 +244,6 @@ ImageRec::read (bool force_native_read)
         return false;  // Image not found
     }
     m_subimages.resize (subimages);
-
     bool allok = true;
     for (int s = 0;  s < subimages;  ++s) {
         int miplevels = 0;
@@ -257,24 +261,80 @@ ImageRec::read (bool force_native_read)
             // simply fall back on ImageCache.
             bool forceread = (s == 0 && m == 0 &&
                               m_imagecache->imagespec(uname,s,m)->image_bytes() < 50*1024*1024);
-            ImageBuf *ib = new ImageBuf (name(), m_imagecache);
-            TypeDesc convert = TypeDesc::FLOAT;
-            if (force_native_read) {
-                forceread = true;
-                convert = ib->nativespec().format;
+            ImageBufRef ib (new ImageBuf (name(), 0, 0, m_imagecache, &m_configspec));
+
+            bool post_channel_set_action = false;
+            std::vector<std::string> newchannelnames;
+            std::vector<int> channel_set_channels;
+            std::vector<float> channel_set_values;
+            int chbegin = 0, chend = -1;
+            if (channel_set.size()) {
+                decode_channel_set (ib->nativespec(), channel_set,
+                                    newchannelnames, channel_set_channels,
+                                    channel_set_values);
+                for (size_t c = 0, e = channel_set_channels.size(); c < e; ++c) {
+                    if (channel_set_channels[c] < 0)
+                        post_channel_set_action = true; // value fill-in
+                    else if (c>=1 && channel_set_channels[c] != channel_set_channels[c-1]+1)
+                        post_channel_set_action = true; // non-consecutive chans
+                }
+                if (ib->deep())
+                    post_channel_set_action = true;
+                if (! post_channel_set_action) {
+                    chbegin = channel_set_channels.front();
+                    chend = channel_set_channels.back()+1;
+                    forceread = true;
+                }
             }
-            bool ok = ib->read (s, m, forceread, convert);
+
+            // If we were requested to bypass the cache, force a full read.
+            if (readpolicy & ReadNoCache)
+                forceread = true;
+
+            // Convert to float unless asked to keep native or override.
+            TypeDesc convert = TypeDesc::FLOAT;
+            if (m_input_dataformat != TypeDesc::UNKNOWN) {
+                convert = m_input_dataformat;
+                forceread = true;
+            }
+            else if (readpolicy & ReadNative)
+                convert = ib->nativespec().format;
+            if (! forceread &&
+                convert != TypeDesc::UINT8 && convert != TypeDesc::UINT16 &&
+                convert != TypeDesc::HALF &&  convert != TypeDesc::FLOAT) {
+                // If we're still trying to use the cache but it doesn't
+                // support the native type, force a full read.
+                forceread = true;
+            }
+
+            bool ok = ib->read (s, m, chbegin, chend, forceread, convert);
+            if (ok && post_channel_set_action) {
+                ImageBufRef allchan_buf;
+                std::swap (allchan_buf, ib);
+                ok = ImageBufAlgo::channels (*ib, *allchan_buf,
+                            (int)channel_set_channels.size(), &channel_set_channels[0],
+                            &channel_set_values[0], &newchannelnames[0], false);
+            }
             if (!ok)
                 error ("%s", ib->geterror());
+
             allok &= ok;
             // Remove any existing SHA-1 hash from the spec.
             ib->specmod().erase_attribute ("oiio:SHA-1");
             std::string desc = ib->spec().get_string_attribute ("ImageDescription");
-            if (desc.size())
+            if (desc.size()) {
+#ifdef USE_BOOST_REGEX
+                static boost::regex regex_sha ("SHA-1=[[:xdigit:]]*[ ]*");
                 ib->specmod().attribute ("ImageDescription",
                                          boost::regex_replace (desc, regex_sha, ""));
+#else
+                static std::regex regex_sha ("SHA-1=[[:xdigit:]]*[ ]*");
+                ib->specmod().attribute ("ImageDescription",
+                                         std::regex_replace (desc, regex_sha, ""));
+#endif
+            }
 
-            m_subimages[s].m_miplevels[m].reset (ib);
+            m_subimages[s].m_miplevels[m] = ib;
             m_subimages[s].m_specs[m] = ib->spec();
             // For ImageRec purposes, we need to restore a few of the
             // native settings.

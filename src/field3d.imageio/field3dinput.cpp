@@ -32,14 +32,12 @@
 #include <cstdlib>
 #include <cmath>
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/filesystem.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/thread.h>
+#include <OpenImageIO/filesystem.h>
 
 #include <OpenEXR/ImathVec.h>
-
-#include <boost/foreach.hpp>
 
 #include "field3d_pvt.h"
 using namespace OIIO_NAMESPACE::f3dpvt;

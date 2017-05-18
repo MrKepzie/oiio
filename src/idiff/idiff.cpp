@@ -37,17 +37,17 @@
 #include <iomanip>
 #include <iterator>
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/argparse.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/imagecache.h"
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/imagebufalgo.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/fmath.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/argparse.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/imagecache.h>
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/fmath.h>
 
 
-OIIO_NAMESPACE_USING
+using namespace OIIO;
 
 
 enum idiffErrors {
@@ -84,7 +84,7 @@ static int
 parse_files (int argc, const char *argv[])
 {
     for (int i = 0;  i < argc;  i++)
-        filenames.push_back (argv[i]);
+        filenames.emplace_back(argv[i]);
     return 0;
 }
 
@@ -302,12 +302,18 @@ main (int argc, char *argv[])
                         std::cout << ", " << img1.spec().channelnames[cr.maxc] << ')';
                     else
                         std::cout << ", channel " << cr.maxc << ')';
+                    std::cout << "  values are ";
+                    for (int c = 0; c < img0.spec().nchannels; ++c)
+                        std::cout << (c ? ", " : "") << img0.getchannel(cr.maxx, cr.maxy, 0, c);
+                    std::cout << " vs ";
+                    for (int c = 0; c < img1.spec().nchannels; ++c)
+                        std::cout << (c ? ", " : "") << img1.getchannel(cr.maxx, cr.maxy, 0, c);
                 }
                 std::cout << "\n";
-// when Visual Studio is used float values in scientific foramt are 
-// printed with three digit exponent. We change this behaviour to fit
-// Linux way
-#ifdef _MSC_VER
+#if OIIO_MSVS_BEFORE_2015
+                // When older Visual Studio is used, float values in
+                // scientific foramt are printed with three digit exponent.
+                // We change this behaviour to fit Linux way.
                 _set_output_format(_TWO_DIGIT_EXPONENT);
 #endif
                 std::streamsize precis = std::cout.precision();

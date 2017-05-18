@@ -37,14 +37,14 @@
 #include <OpenEXR/ImathBox.h>
 
 #include <cmath>
+#include <memory>
 
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/imagebufalgo.h"
-#include "OpenImageIO/imagebufalgo_util.h"
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/filter.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/refcnt.h"
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
+#include <OpenImageIO/imagebufalgo_util.h>
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/filter.h>
+#include <OpenImageIO/thread.h>
 
 OIIO_NAMESPACE_BEGIN
 
@@ -185,17 +185,7 @@ static bool
 resize_ (ImageBuf &dst, const ImageBuf &src,
          Filter2D *filter, ROI roi, int nthreads)
 {
-    if (nthreads != 1 && roi.npixels() >= 1000) {
-        // Lots of pixels and request for multi threads? Parallelize.
-        ImageBufAlgo::parallel_image (
-            OIIO::bind(resize_<DSTTYPE,SRCTYPE>, OIIO::ref(dst),
-                        OIIO::cref(src), filter,
-                        _1 /*roi*/, 1 /*nthreads*/),
-            roi, nthreads);
-        return true;
-    }
-
-    // Serial case
+    ImageBufAlgo::parallel_image (roi, nthreads, [&](ROI roi){
 
     const ImageSpec &srcspec (src.spec());
     const ImageSpec &dstspec (dst.spec());
@@ -215,10 +205,10 @@ resize_ (ImageBuf &dst, const ImageBuf &src,
     float xratio = float(dstspec.full_width) / srcfw; // 2 upsize, 0.5 downsize
     float yratio = float(dstspec.full_height) / srcfh;
 
-    float dstfx = dstspec.full_x;
-    float dstfy = dstspec.full_y;
-    float dstfw = dstspec.full_width;
-    float dstfh = dstspec.full_height;
+    float dstfx = float (dstspec.full_x);
+    float dstfy = float (dstspec.full_y);
+    float dstfw = float (dstspec.full_width);
+    float dstfh = float (dstspec.full_height);
     float dstpixelwidth = 1.0f / dstfw;
     float dstpixelheight = 1.0f / dstfh;
     float *pel = ALLOCA (float, nchannels);
@@ -231,12 +221,35 @@ resize_ (ImageBuf &dst, const ImageBuf &src,
     int xtaps = 2*radi + 1;
     int ytaps = 2*radj + 1;
     bool separable = filter->separable();
-    float *xfiltval = NULL, *yfiltval = NULL;
+    float *yfiltval = ALLOCA (float, ytaps);
+    float *xfiltval_all = NULL;
     if (separable) {
-        // Allocate temp space to cache the filter weights
-        xfiltval = ALLOCA (float, xtaps);
-        yfiltval = ALLOCA (float, ytaps);
+        // For separable filters, horizontal tap weights will be the same
+        // for every column. So we precompute all the tap weights for every
+        // x position we'll need. We do the same thing in y, but row by row
+        // inside the loop (since we never revisit a y row). This
+        // substantially speeds up resize.
+        xfiltval_all = ALLOCA (float, xtaps * roi.width());
+        for (int x = roi.xbegin;  x < roi.xend;  ++x) {
+            float *xfiltval = xfiltval_all + (x-roi.xbegin) * xtaps;
+            float s = (x-dstfx+0.5f)*dstpixelwidth;
+            float src_xf = srcfx + s * srcfw;
+            int src_x;
+            float src_xf_frac = floorfrac (src_xf, &src_x);
+            for (int c = 0;  c < nchannels;  ++c)
+                pel[c] = 0.0f;
+            float totalweight_x = 0.0f;
+            for (int i = 0;  i < xtaps;  ++i) {
+                float w = filter->xfilt (xratio * (i-radi-(src_xf_frac-0.5f)));
+                xfiltval[i] = w;
+                totalweight_x += w;
+            }
+            if (totalweight_x != 0.0f)
+                for (int i = 0;  i < xtaps;  ++i)  // normalize x filter
+                    xfiltval[i] /= totalweight_x;  // weights
+        }
     }
+
 #if 0
     std::cerr << "Resizing " << srcspec.full_width << "x" << srcspec.full_height
               << " to " << dstspec.full_width << "x" << dstspec.full_height << "\n";
@@ -248,6 +261,21 @@ resize_ (ImageBuf &dst, const ImageBuf &src,
     std::cerr << "separable filter\n";
 #endif
 
+#define USE_SPECIAL 0
+#if USE_SPECIAL
+    // Special case: src and dst are local memory, float buffers, and we're
+    // operating on all channels, <= 4.
+    bool special = 
+       (   (is_same<DSTTYPE,float>::value || is_same<DSTTYPE,half>::value)
+        && (is_same<SRCTYPE,float>::value || is_same<SRCTYPE,half>::value)
+        // && dst.localpixels() // has to be, because it's writeable
+        && src.localpixels()
+        // && R.contains_roi(roi)  // has to be, because IBAPrep
+        && src.contains_roi(roi)
+        && roi.chbegin == 0 && roi.chend == dst.nchannels()
+        && roi.chend == src.nchannels() && roi.chend <= 4
+        && separable);
+#endif
 
     // We're going to loop over all output pixels we're interested in.
     //
@@ -261,51 +289,43 @@ resize_ (ImageBuf &dst, const ImageBuf &src,
     //     i.e., the closest pixel in the source image.
     // src_xf_frac and src_yf_frac are the position within that pixel
     //     of our sample.
-    ImageBuf::Iterator<DSTTYPE> out (dst, roi);
-    for (int y = roi.ybegin;  y < roi.yend;  ++y) {
-        float t = (y-dstfy+0.5f)*dstpixelheight;
-        float src_yf = srcfy + t * srcfh;
-        int src_y;
-        float src_yf_frac = floorfrac (src_yf, &src_y);
-
-        // If using separable filters, our vertical set of filter tap
-        // weights will be the same for the whole scanline we're on.  Just
-        // compute and normalize them once.
-        float totalweight_y = 0.0f;
-        if (separable) {
+    //
+    // Separate cases for separable and non-separable filters.
+    if (separable) {
+        ImageBuf::Iterator<DSTTYPE> out (dst, roi);
+        ImageBuf::ConstIterator<SRCTYPE> srcpel (src, ImageBuf::WrapClamp);
+        for (int y = roi.ybegin;  y < roi.yend;  ++y) {
+            float t = (y-dstfy+0.5f)*dstpixelheight;
+            float src_yf = srcfy + t * srcfh;
+            int src_y;
+            float src_yf_frac = floorfrac (src_yf, &src_y);
+            // If using separable filters, our vertical set of filter tap
+            // weights will be the same for the whole scanline we're on.  Just
+            // compute and normalize them once.
+            float totalweight_y = 0.0f;
             for (int j = 0;  j < ytaps;  ++j) {
                 float w = filter->yfilt (yratio * (j-radj-(src_yf_frac-0.5f)));
                 yfiltval[j] = w;
                 totalweight_y += w;
             }
-            for (int i = 0;  i < ytaps;  ++i)
-                yfiltval[i] /= totalweight_y;
-        }
+            if (totalweight_y != 0.0f)
+                for (int i = 0;  i < ytaps;  ++i)
+                    yfiltval[i] /= totalweight_y;
 
-        for (int x = roi.xbegin;  x < roi.xend;  ++x) {
-            float s = (x-dstfx+0.5f)*dstpixelwidth;
-            float src_xf = srcfx + s * srcfw;
-            int src_x;
-            float src_xf_frac = floorfrac (src_xf, &src_x);
-            for (int c = 0;  c < nchannels;  ++c)
-                pel[c] = 0.0f;
-            if (separable) {
-                // Cache and normalize the horizontal filter tap weights
-                // just once for this (x,y) position, reuse for all vertical
-                // taps.
+            for (int x = roi.xbegin;  x < roi.xend;  ++x, ++out) {
+                float s = (x-dstfx+0.5f)*dstpixelwidth;
+                float src_xf = srcfx + s * srcfw;
+                int src_x = ifloor (src_xf);
+                for (int c = 0;  c < nchannels;  ++c)
+                    pel[c] = 0.0f;
+                const float *xfiltval = xfiltval_all + (x-roi.xbegin) * xtaps;
                 float totalweight_x = 0.0f;
-                for (int i = 0;  i < xtaps;  ++i) {
-                    float w = filter->xfilt (xratio * (i-radi-(src_xf_frac-0.5f)));
-                    xfiltval[i] = w;
-                    totalweight_x += w;
-                }
-
+                for (int i = 0;  i < xtaps;  ++i)
+                    totalweight_x += xfiltval[i];
                 if (totalweight_x != 0.0f) {
-                    for (int i = 0;  i < xtaps;  ++i)  // normalize x filter
-                        xfiltval[i] /= totalweight_x;  // weights
-                    ImageBuf::ConstIterator<SRCTYPE> srcpel (src, src_x-radi, src_x+radi+1,
-                                                             src_y-radj, src_y+radj+1,
-                                                             0, 1, ImageBuf::WrapClamp);
+                    srcpel.rerange (src_x-radi, src_x+radi+1,
+                                    src_y-radj, src_y+radj+1,
+                                    0, 1, ImageBuf::WrapClamp);
                     for (int j = -radj;  j <= radj;  ++j) {
                         float wy = yfiltval[j+radj];
                         if (wy == 0.0f) {
@@ -315,8 +335,9 @@ resize_ (ImageBuf &dst, const ImageBuf &src,
                         }
                         for (int i = 0;  i < xtaps; ++i, ++srcpel) {
                             float w = wy * xfiltval[i];
-                            for (int c = 0;  c < nchannels;  ++c)
-                                pel[c] += w * srcpel[c];
+                            if (w)
+                                for (int c = 0;  c < nchannels;  ++c)
+                                    pel[c] += w * srcpel[c];
                         }
                     }
                 }
@@ -330,22 +351,39 @@ resize_ (ImageBuf &dst, const ImageBuf &src,
                     for (int c = 0;  c < nchannels;  ++c)
                         out[c] = pel[c];
                 }
-            } else {
-                // Non-separable
+            }
+        }
+
+    } else {
+        // Non-separable filter
+        ImageBuf::Iterator<DSTTYPE> out (dst, roi);
+        ImageBuf::ConstIterator<SRCTYPE> srcpel (src, ImageBuf::WrapClamp);
+        for (int y = roi.ybegin;  y < roi.yend;  ++y) {
+            float t = (y-dstfy+0.5f)*dstpixelheight;
+            float src_yf = srcfy + t * srcfh;
+            int src_y;
+            float src_yf_frac = floorfrac (src_yf, &src_y);
+            for (int x = roi.xbegin;  x < roi.xend;  ++x, ++out) {
+                float s = (x-dstfx+0.5f)*dstpixelwidth;
+                float src_xf = srcfx + s * srcfw;
+                int src_x;
+                float src_xf_frac = floorfrac (src_xf, &src_x);
+                for (int c = 0;  c < nchannels;  ++c)
+                    pel[c] = 0.0f;
                 float totalweight = 0.0f;
-                ImageBuf::ConstIterator<SRCTYPE> srcpel (src, src_x-radi, src_x+radi+1,
-                                                       src_y-radi, src_y+radi+1,
-                                                       0, 1, ImageBuf::WrapClamp);
+                srcpel.rerange (src_x-radi, src_x+radi+1,
+                                src_y-radi, src_y+radi+1,
+                                0, 1, ImageBuf::WrapClamp);
                 for (int j = -radj;  j <= radj;  ++j) {
                     for (int i = -radi;  i <= radi;  ++i, ++srcpel) {
+                        DASSERT (! srcpel.done());
                         float w = (*filter)(xratio * (i-(src_xf_frac-0.5f)),
                                             yratio * (j-(src_yf_frac-0.5f)));
-                        totalweight += w;
-                        if (w == 0.0f)
-                            continue;
-                        DASSERT (! srcpel.done());
-                        for (int c = 0;  c < nchannels;  ++c)
-                            pel[c] += w * srcpel[c];
+                        if (w) {
+                            totalweight += w;
+                            for (int c = 0;  c < nchannels;  ++c)
+                                pel[c] += w * srcpel[c];
+                        }
                     }
                 }
                 DASSERT (srcpel.done());
@@ -361,11 +399,10 @@ resize_ (ImageBuf &dst, const ImageBuf &src,
                         out[c] = pel[c] / totalweight;
                 }
             }
-
-            ++out;
         }
     }
 
+    });  // end of parallel_image
     return true;
 }
 
@@ -382,7 +419,7 @@ ImageBufAlgo::resize (ImageBuf &dst, const ImageBuf &src,
 
     // Set up a shared pointer with custom deleter to make sure any
     // filter we allocate here is properly destroyed.
-    OIIO::shared_ptr<Filter2D> filterptr ((Filter2D*)NULL, Filter2D::destroy);
+    std::shared_ptr<Filter2D> filterptr ((Filter2D*)NULL, Filter2D::destroy);
     bool allocfilter = (filter == NULL);
     if (allocfilter) {
         // If no filter was provided, punt and just linearly interpolate.
@@ -423,7 +460,7 @@ ImageBufAlgo::resize (ImageBuf &dst, const ImageBuf &src,
 
     // Set up a shared pointer with custom deleter to make sure any
     // filter we allocate here is properly destroyed.
-    OIIO::shared_ptr<Filter2D> filter ((Filter2D*)NULL, Filter2D::destroy);
+    std::shared_ptr<Filter2D> filter ((Filter2D*)NULL, Filter2D::destroy);
     std::string filtername = filtername_;
     if (filtername.empty()) {
         // No filter name supplied -- pick a good default
@@ -461,65 +498,70 @@ static bool
 resample_ (ImageBuf &dst, const ImageBuf &src, bool interpolate,
            ROI roi, int nthreads)
 {
-    if (nthreads != 1 && roi.npixels() >= 1000) {
-        // Lots of pixels and request for multi threads? Parallelize.
-        ImageBufAlgo::parallel_image (
-            OIIO::bind(resample_<DSTTYPE,SRCTYPE>, OIIO::ref(dst),
-                        OIIO::cref(src), interpolate,
-                        _1 /*roi*/, 1 /*nthreads*/),
-            roi, nthreads);
-        return true;
-    }
+    ImageBufAlgo::parallel_image (roi, nthreads, [&](ROI roi){
+        const ImageSpec &srcspec (src.spec());
+        const ImageSpec &dstspec (dst.spec());
+        int nchannels = src.nchannels();
+        bool deep = src.deep();
+        ASSERT (deep == dst.deep());
 
-    // Serial case
+        // Local copies of the source image window, converted to float
+        float srcfx = srcspec.full_x;
+        float srcfy = srcspec.full_y;
+        float srcfw = srcspec.full_width;
+        float srcfh = srcspec.full_height;
 
-    const ImageSpec &srcspec (src.spec());
-    const ImageSpec &dstspec (dst.spec());
-    int nchannels = src.nchannels();
+        float dstfx = dstspec.full_x;
+        float dstfy = dstspec.full_y;
+        float dstfw = dstspec.full_width;
+        float dstfh = dstspec.full_height;
+        float dstpixelwidth = 1.0f / dstfw;
+        float dstpixelheight = 1.0f / dstfh;
+        float *pel = ALLOCA (float, nchannels);
 
-    // Local copies of the source image window, converted to float
-    float srcfx = srcspec.full_x;
-    float srcfy = srcspec.full_y;
-    float srcfw = srcspec.full_width;
-    float srcfh = srcspec.full_height;
-
-    float dstfx = dstspec.full_x;
-    float dstfy = dstspec.full_y;
-    float dstfw = dstspec.full_width;
-    float dstfh = dstspec.full_height;
-    float dstpixelwidth = 1.0f / dstfw;
-    float dstpixelheight = 1.0f / dstfh;
-    float *pel = ALLOCA (float, nchannels);
-
-    ImageBuf::Iterator<DSTTYPE> out (dst, roi);
-    ImageBuf::ConstIterator<SRCTYPE> srcpel (src);
-    for (int y = roi.ybegin;  y < roi.yend;  ++y) {
-        // s,t are NDC space
-        float t = (y-dstfy+0.5f)*dstpixelheight;
-        // src_xf, src_xf are image space float coordinates
-        float src_yf = srcfy + t * srcfh - 0.5f;
-        // src_x, src_y are image space integer coordinates of the floor
-        int src_y;
-        (void) floorfrac (src_yf, &src_y);
-        for (int x = roi.xbegin;  x < roi.xend;  ++x) {
-            float s = (x-dstfx+0.5f)*dstpixelwidth;
-            float src_xf = srcfx + s * srcfw - 0.5f;
-            int src_x;
-            (void) floorfrac (src_xf, &src_x);
-
-            if (interpolate) {
-                src.interppixel (src_xf, src_yf, pel);
-                for (int c = roi.chbegin; c < roi.chend; ++c)
-                    out[c] = pel[c];
-            } else {
-                srcpel.pos (src_x, src_y, 0);
-                for (int c = roi.chbegin; c < roi.chend; ++c)
-                    out[c] = srcpel[c];
+        ImageBuf::Iterator<DSTTYPE> out (dst, roi);
+        ImageBuf::ConstIterator<SRCTYPE> srcpel (src);
+        for (int y = roi.ybegin;  y < roi.yend;  ++y) {
+            // s,t are NDC space
+            float t = (y-dstfy+0.5f)*dstpixelheight;
+            // src_xf, src_xf are image space float coordinates
+            float src_yf = srcfy + t * srcfh - 0.5f;
+            // src_x, src_y are image space integer coordinates of the floor
+            int src_y;
+            (void) floorfrac (src_yf, &src_y);
+            for (int x = roi.xbegin;  x < roi.xend;  ++x, ++out) {
+                float s = (x-dstfx+0.5f)*dstpixelwidth;
+                float src_xf = srcfx + s * srcfw - 0.5f;
+                int src_x;
+                (void) floorfrac (src_xf, &src_x);
+                if (deep) {
+                    srcpel.pos (src_x, src_y, 0);
+                    int nsamps = srcpel.deep_samples();
+                    ASSERT (nsamps == out.deep_samples());
+                    if (! nsamps)
+                        continue;
+                    for (int c = 0; c < nchannels; ++c) {
+                        if (dstspec.channelformat(c) == TypeDesc::UINT32)
+                            for (int samp = 0; samp < nsamps; ++samp)
+                                out.set_deep_value (c, samp, srcpel.deep_value_uint(c, samp));
+                        else
+                            for (int samp = 0; samp < nsamps; ++samp)
+                                out.set_deep_value (c, samp, srcpel.deep_value(c, samp));
+                    }
+                } else if (interpolate) {
+                    // Non-deep image, bilinearly interpolate
+                    src.interppixel (src_xf, src_yf, pel);
+                    for (int c = roi.chbegin; c < roi.chend; ++c)
+                        out[c] = pel[c];
+                } else {
+                    // Non-deep image, just copy closest pixel
+                    srcpel.pos (src_x, src_y, 0);
+                    for (int c = roi.chbegin; c < roi.chend; ++c)
+                        out[c] = srcpel[c];
+                }
             }
-            ++out;
         }
-    }
-
+    });
     return true;
 }
 
@@ -531,8 +573,33 @@ ImageBufAlgo::resample (ImageBuf &dst, const ImageBuf &src,
 {
     if (! IBAprep (roi, &dst, &src,
             IBAprep_REQUIRE_SAME_NCHANNELS | IBAprep_NO_SUPPORT_VOLUME |
-            IBAprep_NO_COPY_ROI_FULL))
+            IBAprep_NO_COPY_ROI_FULL | IBAprep_SUPPORT_DEEP))
         return false;
+
+    if (dst.deep()) {
+        // If it's deep, figure out the sample allocations first, because
+        // it's not thread-safe to do that simultaneously with copying the
+        // values.
+        const ImageSpec &srcspec (src.spec());
+        const ImageSpec &dstspec (dst.spec());
+        float srcfx = srcspec.full_x;
+        float srcfy = srcspec.full_y;
+        float srcfw = srcspec.full_width;
+        float srcfh = srcspec.full_height;
+        float dstpixelwidth = 1.0f / dstspec.full_width;
+        float dstpixelheight = 1.0f / dstspec.full_height;
+        ImageBuf::ConstIterator<float> srcpel (src, roi);
+        ImageBuf::Iterator<float> dstpel (dst, roi);
+        for ( ;  !dstpel.done();  ++dstpel, ++srcpel) {
+            float s = (dstpel.x()-dstspec.full_x+0.5f)*dstpixelwidth;
+            float t = (dstpel.y()-dstspec.full_y+0.5f)*dstpixelheight;
+            int src_y = ifloor (srcfy + t * srcfh - 0.5f);
+            int src_x = ifloor (srcfx + s * srcfw - 0.5f);
+            srcpel.pos (src_x, src_y, 0);
+            dstpel.set_deep_samples (srcpel.deep_samples ());
+        }
+    }
+
     bool ok;
     OIIO_DISPATCH_COMMON_TYPES2 (ok, "resample", resample_,
                           dst.spec().format, src.spec().format,
@@ -548,26 +615,17 @@ static bool
 affine_resample_ (ImageBuf &dst, const ImageBuf &src, const Imath::M33f &Minv,
                   ROI roi, int nthreads)
 {
-    if (nthreads != 1 && roi.npixels() >= 1000) {
-        // Possible multiple thread case -- recurse via parallel_image
-        ImageBufAlgo::parallel_image (
-            OIIO::bind(affine_resample_<DSTTYPE,SRCTYPE>,
-                        OIIO::ref(dst), OIIO::cref(src), Minv,
-                        _1 /*roi*/, 1 /*nthreads*/),
-            roi, nthreads);
-        return true;
-    }
-
-    // Serial case
-    ImageBuf::Iterator<DSTTYPE,DSTTYPE> d (dst, roi);
-    ImageBuf::ConstIterator<SRCTYPE,DSTTYPE> s (src);
-    for (  ;  ! d.done();  ++d) {
-        Imath::V2f P (d.x()+0.5f, d.y()+0.5f);
-        Minv.multVecMatrix (P, P);
-        s.pos (int(floorf(P.x)), int(floorf(P.y)), d.z());
-        for (int c = roi.chbegin;  c < roi.chend;  ++c)
-            d[c] = s[c];
-    }
+    ImageBufAlgo::parallel_image (roi, nthreads, [&](ROI roi){
+        ImageBuf::Iterator<DSTTYPE,DSTTYPE> d (dst, roi);
+        ImageBuf::ConstIterator<SRCTYPE,DSTTYPE> s (src);
+        for (  ;  ! d.done();  ++d) {
+            Imath::V2f P (d.x()+0.5f, d.y()+0.5f);
+            Minv.multVecMatrix (P, P);
+            s.pos (int(floorf(P.x)), int(floorf(P.y)), d.z());
+            for (int c = roi.chbegin;  c < roi.chend;  ++c)
+                d[c] = s[c];
+        }
+    });
     return true;
 }
 #endif
@@ -580,33 +638,24 @@ warp_ (ImageBuf &dst, const ImageBuf &src, const Imath::M33f &M,
        const Filter2D *filter, ImageBuf::WrapMode wrap,
        ROI roi, int nthreads)
 {
-    if (nthreads != 1 && roi.npixels() >= 1000) {
-        // Possible multiple thread case -- recurse via parallel_image
-        ImageBufAlgo::parallel_image (
-            OIIO::bind(warp_<DSTTYPE,SRCTYPE>,
-                        OIIO::ref(dst), OIIO::cref(src), M,
-                        filter, wrap, _1 /*roi*/, 1 /*nthreads*/),
-            roi, nthreads);
-        return true;
-    }
+    ImageBufAlgo::parallel_image (roi, nthreads, [&](ROI roi){
+        int nc = dst.nchannels();
+        float *pel = ALLOCA (float, nc);
+        memset (pel, 0, nc*sizeof(float));
+        Imath::M33f Minv = M.inverse();
+        ImageBuf::Iterator<DSTTYPE> out (dst, roi);
+        for (  ;  ! out.done();  ++out) {
+            Dual2 x (out.x()+0.5f, 1.0f, 0.0f);
+            Dual2 y (out.y()+0.5f, 0.0f, 1.0f);
+            robust_multVecMatrix (Minv, x, y, x, y);
+            filtered_sample<SRCTYPE> (src, x.val(), y.val(),
+                                      x.dx(), y.dx(), x.dy(), y.dy(),
+                                      filter, wrap, pel);
+            for (int c = roi.chbegin;  c < roi.chend;  ++c)
+                out[c] = pel[c];
 
-    // Serial case
-    int nc = dst.nchannels();
-    float *pel = ALLOCA (float, nc);
-    memset (pel, 0, nc*sizeof(float));
-    Imath::M33f Minv = M.inverse();
-    ImageBuf::Iterator<DSTTYPE> out (dst, roi);
-    for (  ;  ! out.done();  ++out) {
-        Dual2 x (out.x()+0.5f, 1.0f, 0.0f);
-        Dual2 y (out.y()+0.5f, 0.0f, 1.0f);
-        robust_multVecMatrix (Minv, x, y, x, y);
-        filtered_sample<SRCTYPE> (src, x.val(), y.val(),
-                                  x.dx(), y.dx(), x.dy(), y.dy(),
-                                  filter, wrap, pel);
-        for (int c = roi.chbegin;  c < roi.chend;  ++c)
-            out[c] = pel[c];
- 
-    }
+        }
+    });
     return true;
 }
 
@@ -636,7 +685,7 @@ ImageBufAlgo::warp (ImageBuf &dst, const ImageBuf &src,
 
     // Set up a shared pointer with custom deleter to make sure any
     // filter we allocate here is properly destroyed.
-    OIIO::shared_ptr<Filter2D> filterptr ((Filter2D*)NULL, Filter2D::destroy);
+    std::shared_ptr<Filter2D> filterptr ((Filter2D*)NULL, Filter2D::destroy);
     if (filter == NULL) {
         // If no filter was provided, punt and just linearly interpolate.
         filterptr.reset (Filter2D::create ("lanczos3", 6.0f, 6.0f));
@@ -661,7 +710,7 @@ ImageBufAlgo::warp (ImageBuf &dst, const ImageBuf &src,
 {
     // Set up a shared pointer with custom deleter to make sure any
     // filter we allocate here is properly destroyed.
-    OIIO::shared_ptr<Filter2D> filter ((Filter2D*)NULL, Filter2D::destroy);
+    std::shared_ptr<Filter2D> filter ((Filter2D*)NULL, Filter2D::destroy);
     std::string filtername = filtername_.size() ? filtername_ : "lanczos3";
     for (int i = 0, e = Filter2D::num_filters();  i < e;  ++i) {
         FilterDesc fd;

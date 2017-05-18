@@ -31,13 +31,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <memory>
+
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/typedesc.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/fmath.h>
 
 #include "targa_pvt.h"
-
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/typedesc.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/fmath.h"
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
@@ -106,6 +108,8 @@ OIIO_EXPORT int targa_imageio_version = OIIO_PLUGIN_VERSION;
 OIIO_EXPORT const char * targa_input_extensions[] = {
     "tga", "tpic", NULL
 };
+
+OIIO_EXPORT const char* targa_imageio_library_version () { return NULL; }
 
 OIIO_PLUGIN_EXPORTS_END
 
@@ -362,12 +366,17 @@ TGAInput::open (const std::string &name, ImageSpec &newspec)
                 if (bigendian())
                     swap_endian (&buf.s[0], 2);
                 float gamma = (float)buf.s[0] / (float)buf.s[1];
-                
+                // Round gamma to the nearest hundredth to prevent stupid
+                // precision choices and make it easier for apps to make
+                // decisions based on known gamma values. For example, you want
+                // 2.2, not 2.19998.
+                gamma = roundf (100.0 * gamma) / 100.0f;
                 if (gamma == 1.f) {
-                    m_spec.attribute ("oiio:ColorSpace", "Linear");
+                    m_spec.attribute ("oiio:ColorSpace", "linear");
                 }
                 else {
-                    m_spec.attribute ("oiio:ColorSpace", "GammaCorrected");
+                    m_spec.attribute ("oiio:ColorSpace",
+                                      Strutil::format("GammaCorrected%.2g", gamma));
                     m_spec.attribute ("oiio:Gamma", gamma);
                 }
             }
@@ -425,12 +434,12 @@ TGAInput::open (const std::string &name, ImageSpec &newspec)
                 if (alphabits == 0 && m_tga.bpp == 32)
                     alphabits = 8;
                 // read palette, if there is any
-                unsigned char *palette = NULL;
+                std::unique_ptr<unsigned char[]> palette;
                 if (m_tga.cmap_type) {
                     fseek (m_file, ofs, SEEK_SET);
-                    palette = new unsigned char[palbytespp
-                                                * m_tga.cmap_length];
-                    if (! fread (palette, palbytespp, m_tga.cmap_length))
+                    palette.reset (new unsigned char[palbytespp
+                                                * m_tga.cmap_length]);
+                    if (! fread (palette.get(), palbytespp, m_tga.cmap_length))
                         return false;
                     fseek (m_file, ofs_thumb + 2, SEEK_SET);
                 }
@@ -440,7 +449,7 @@ TGAInput::open (const std::string &name, ImageSpec &newspec)
                     for (int x = 0; x < buf.c[0]; x++) {
                         if (! fread (in, bytespp, 1))
                             return false;
-                        decode_pixel (in, pixel, palette,
+                        decode_pixel (in, pixel, palette.get(),
                                       bytespp, palbytespp, alphabits);
                         memcpy (&m_buf[y * buf.c[0] * m_spec.nchannels
                                 + x * m_spec.nchannels],

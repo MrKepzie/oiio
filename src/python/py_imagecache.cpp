@@ -28,10 +28,8 @@
   (This is the Modified BSD License)
 */
 
-#include <boost/scoped_array.hpp>
-
+#include <memory>
 #include "py_oiio.h"
-#include "OpenImageIO/ustring.h"
 
 namespace PyOpenImageIO
 {
@@ -48,12 +46,6 @@ void ImageCacheWrap::destroy (ImageCacheWrap *x)
 {
     ImageCache::destroy(x->m_cache);
 }
-
-void ImageCacheWrap::clear ()
-{
-    m_cache->clear();
-}
-
 
 std::string ImageCacheWrap::resolve_filename (const std::string &val)
 {
@@ -94,7 +86,7 @@ object ImageCacheWrap::get_pixels (const std::string &filename_,
 
     size_t size = size_t ((xend-xbegin) * (yend-ybegin) * (zend-zbegin) *
                           (chend-chbegin) * datatype.size());
-    boost::scoped_array<char> data (new char [size]);
+    std::unique_ptr<char[]> data (new char [size]);
     if (! m_cache->get_pixels (filename, subimage, miplevel, xbegin, xend,
                                ybegin, yend, zbegin, zend, datatype, &data[0]))
         return object(handle<>(Py_None));   // get_pixels failed;
@@ -199,7 +191,6 @@ void declare_imagecache()
         .staticmethod("create")
         .def("destroy", &ImageCacheWrap::destroy)
         .staticmethod("destroy")
-        .def("clear", &ImageCacheWrap::clear)
         .def("attribute", &ImageCacheWrap::attribute_float)
         .def("attribute", &ImageCacheWrap::attribute_int)
         .def("attribute", &ImageCacheWrap::attribute_string)
@@ -227,4 +218,3 @@ void declare_imagecache()
 }
 
 } // namespace PyOpenImageIO
-

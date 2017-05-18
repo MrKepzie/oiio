@@ -54,16 +54,18 @@
 #include <limits>
 #include <cmath>
 
-#include "export.h"
-#include "oiioversion.h"
-#include "platform.h"
-#include "typedesc.h"   /* Needed for TypeDesc definition */
-#include "paramlist.h"
-#include "array_view.h"
+#include <OpenImageIO/export.h>
+#include <OpenImageIO/oiioversion.h>
+#include <OpenImageIO/platform.h>
+#include <OpenImageIO/typedesc.h>
+#include <OpenImageIO/paramlist.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/array_view.h>
 
 OIIO_NAMESPACE_BEGIN
 
 class DeepData;
+struct ROI;
 
 
 /// Type we use for stride lengths.  This is only used to designate
@@ -149,6 +151,10 @@ public:
     /// Constructor for simple 2D scanline image with nothing special.
     /// If fmt is not supplied, default to unsigned 8-bit data.
     ImageSpec (int xres, int yres, int nchans, TypeDesc fmt = TypeDesc::UINT8);
+
+    /// Constructor from an ROI that gives x, y, z, and channel range, and
+    /// a data format.
+    explicit ImageSpec (const ROI &roi, TypeDesc fmt = TypeDesc::UINT8);
 
     /// Set the data format.
     void set_format (TypeDesc fmt);
@@ -355,6 +361,13 @@ public:
     static std::string metadata_val (const ImageIOParameter &p,
                               bool human=false);
 
+    enum SerialFormat  { SerialText, SerialXML };
+    enum SerialVerbose { SerialBrief, SerialDetailed, SerialDetailedHuman };
+
+    /// Convert ImageSpec class into a serialized string.
+    std::string serialize (SerialFormat format,
+                           SerialVerbose verbose = SerialDetailed) const;
+
     /// Convert ImageSpec class into XML string.
     ///
     std::string to_xml () const;
@@ -377,7 +390,8 @@ public:
                 (((zend-z) % tile_depth)  == 0 || (zend-z) == depth));
     }
 
-    /// Return teh channelformat of the given channel.
+    /// Return the channelformat of the given channel. This is safe even
+    /// if channelformats is not filled out.
     TypeDesc channelformat (int chan) const {
         return chan >= 0 && chan < (int)channelformats.size()
             ? channelformats[chan] : format;
@@ -803,9 +817,10 @@ public:
 
     /// Error reporting for the plugin implementation: call this with
     /// printf-like arguments.  Note however that this is fully typesafe!
-    // void error (const char *format, ...) const;
-    TINYFORMAT_WRAP_FORMAT (void, error, const,
-        std::ostringstream msg;, msg, append_error(msg.str());)
+    template<typename... Args>
+    void error (string_view fmt, const Args&... args) const {
+        append_error(Strutil::format (fmt, args...));
+    }
 
     /// Set the current thread-spawning policy: the maximum number of
     /// threads that may be spawned by ImageInput internals. A value of 1
@@ -1134,9 +1149,10 @@ public:
 
     /// Error reporting for the plugin implementation: call this with
     /// printf-like arguments.  Note however that this is fully typesafe!
-    /// void error (const char *format, ...)
-    TINYFORMAT_WRAP_FORMAT (void, error, const,
-        std::ostringstream msg;, msg, append_error(msg.str());)
+    template<typename... Args>
+    void error (string_view fmt, const Args&... args) const {
+        append_error(Strutil::format (fmt, args...));
+    }
 
     /// Set the current thread-spawning policy: the maximum number of
     /// threads that may be spawned by ImageOutput internals. A value of 1
@@ -1239,12 +1255,21 @@ OIIO_API std::string geterror ();
 ///     int exr_threads
 ///             The size of the internal OpenEXR thread pool. The default
 ///             is to use the full available hardware concurrency detected.
+///             Default is 0 meaning to use full available hardware
+///             concurrency detected, -1 means to disable usage of the OpenEXR
+///             thread pool and execute everything in the caller thread.
 ///     string plugin_searchpath
 ///             Colon-separated list of directories to search for 
 ///             dynamically-loaded format plugins.
 ///     string format_list     (for 'getattribute' only, cannot set)
 ///             Comma-separated list of all format names supported
 ///             or for which plugins could be found.
+///     string input_format_list     (for 'getattribute' only, cannot set)
+///             Comma-separated list of all format names supported
+///             or for which plugins could be found that can read images.
+///     string output_format_list     (for 'getattribute' only, cannot set)
+///             Comma-separated list of all format names supported
+///             or for which plugins could be found that can write images.
 ///     string extension_list   (for 'getattribute' only, cannot set)
 ///             For each format, the format name followed by a colon,
 ///             followed by comma-separated list of all extensions that
@@ -1321,7 +1346,8 @@ OIIO_API void declare_imageio_format (const std::string &format_name,
                                       ImageInput::Creator input_creator,
                                       const char **input_extensions,
                                       ImageOutput::Creator output_creator,
-                                      const char **output_extensions);
+                                      const char **output_extensions,
+                                      const char *lib_version);
 
 
 /// Helper function: convert contiguous arbitrary data between two
@@ -1403,7 +1429,8 @@ OIIO_API bool copy_image (int nchannels, int width, int height, int depth,
 /// ImageSpec.  Return true if all is ok, false if the exif block was
 /// somehow malformed.  The binary data pointed to by 'exif' should
 /// start with a TIFF directory header.
-OIIO_API bool decode_exif (const void *exif, int length, ImageSpec &spec);
+OIIO_API bool decode_exif (string_view exif, ImageSpec &spec);
+OIIO_API bool decode_exif (const void *exif, int length, ImageSpec &spec); // DEPRECATED (1.8)
 
 /// Construct an Exif data block from the ImageSpec, appending the Exif 
 /// data as a big blob to the char vector.
@@ -1463,18 +1490,17 @@ OIIO_API bool wrap_mirror (int &coord, int origin, int width);
 typedef bool (*wrap_impl) (int &coord, int origin, int width);
 
 
-namespace pvt {
-// For internal use - use debugmsg() below for a nicer interface.
-OIIO_API void debugmsg_ (string_view message);
-};
-
-/// debugmsg(format, ...) prints debugging message when attribute "debug" is
+/// debug(format, ...) prints debugging message when attribute "debug" is
 /// nonzero, which it is by default for DEBUG compiles or when the
 /// environment variable OPENIMAGEIO_DEBUG is set. This is preferred to raw
 /// output to stderr for debugging statements.
-///   void debugmsg (const char *format, ...);
-TINYFORMAT_WRAP_FORMAT (void, debugmsg, /**/,
-                        std::ostringstream msg;, msg, pvt::debugmsg_(msg.str());)
+OIIO_API void debug (string_view str);
+
+template<typename T1, typename... Args>
+void debug (string_view fmt, const T1& v1, const Args&... args)
+{
+    debug (Strutil::format(fmt.c_str(), v1, args...));
+}
 
 
 // to force correct linkage on some systems

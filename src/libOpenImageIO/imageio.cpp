@@ -34,32 +34,43 @@
 #include <OpenEXR/half.h>
 #include <OpenEXR/ImathFun.h>
 
-#include <boost/scoped_array.hpp>
-#include <boost/thread.hpp>
 #include <boost/thread/tss.hpp>
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/typedesc.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/sysutil.h"
-#include "OpenImageIO/fmath.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/hash.h"
-#include "OpenImageIO/imageio.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/typedesc.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/sysutil.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/thread.h>
+#include <OpenImageIO/parallel.h>
+#include <OpenImageIO/hash.h>
+#include <OpenImageIO/imageio.h>
 #include "imageio_pvt.h"
 
 OIIO_NAMESPACE_BEGIN
 
+static int
+threads_default ()
+{
+    int n = Strutil::from_string<int>(Sysutil::getenv("OPENIMAGEIO_THREADS"));
+    if (n < 1)
+        n = Sysutil::hardware_concurrency();
+    return n;
+}
+
 // Global private data
 namespace pvt {
 recursive_mutex imageio_mutex;
-atomic_int oiio_threads (Sysutil::physical_concurrency());
-atomic_int oiio_exr_threads (Sysutil::physical_concurrency());
+atomic_int oiio_threads (threads_default());
+atomic_int oiio_exr_threads (threads_default());
 atomic_int oiio_read_chunk (256);
 int tiff_half (0);
 ustring plugin_searchpath (OIIO_DEFAULT_PLUGIN_SEARCHPATH);
 std::string format_list;   // comma-separated list of all formats
+std::string input_format_list;   // comma-separated list of readable formats
+std::string output_format_list;  // comma-separated list of writeable formats
 std::string extension_list;   // list of all extensions for all formats
+std::string library_list;   // list of all libraries for all formats
 }
 
 using namespace pvt;
@@ -69,7 +80,8 @@ namespace {
 // Hidden global OIIO data.
 static spin_mutex attrib_mutex;
 static const int maxthreads = 256;   // reasonable maximum for sanity check
-const char *oiio_debug_env = getenv("OPENIMAGEIO_DEBUG");
+static const char *oiio_debug_env = getenv("OPENIMAGEIO_DEBUG");
+static FILE *oiio_debug_file = NULL;
 #ifdef NDEBUG
 int print_debug (oiio_debug_env ? atoi(oiio_debug_env) : 0);
 #else
@@ -107,10 +119,8 @@ error_msg ()
 
 
 
-/// Error reporting for the plugin implementation: call this with
-/// printf-like arguments.
 void
-pvt::seterror (const std::string& message)
+pvt::seterror (string_view message)
 {
     error_msg() = message;
 }
@@ -128,12 +138,16 @@ geterror ()
 
 
 void
-pvt::debugmsg_ (string_view message)
+debug (string_view message)
 {
     recursive_lock_guard lock (pvt::imageio_mutex);
     if (print_debug) {
-        std::cerr << "OIIO DEBUG: " << message 
-                  << (message.back() == '\n' ? "" : "\n");
+        if (! oiio_debug_file) {
+            const char *filename = getenv("OPENIMAGEIO_DEBUG_FILE");
+            oiio_debug_file = filename && filename[0] ? fopen(filename,"a") : stderr;
+            ASSERT (oiio_debug_file);
+        }
+        Strutil::fprintf (oiio_debug_file, "OIIO DEBUG: %s", message);
     }
 }
 
@@ -145,8 +159,9 @@ attribute (string_view name, TypeDesc type, const void *val)
     if (name == "threads" && type == TypeDesc::TypeInt) {
         int ot = Imath::clamp (*(const int *)val, 0, maxthreads);
         if (ot == 0)
-            ot = Sysutil::physical_concurrency();
+            ot = threads_default();
         oiio_threads = ot;
+        default_thread_pool()->resize (ot-1);
         return true;
     }
     spin_lock lock (attrib_mutex);
@@ -159,7 +174,7 @@ attribute (string_view name, TypeDesc type, const void *val)
         return true;
     }
     if (name == "exr_threads" && type == TypeDesc::TypeInt) {
-        oiio_exr_threads = Imath::clamp (*(const int *)val, 0, maxthreads);
+        oiio_exr_threads = Imath::clamp (*(const int *)val, -1, maxthreads);
         return true;
     }
     if (name == "tiff:half" && type == TypeDesc::TypeInt) {
@@ -197,10 +212,28 @@ getattribute (string_view name, TypeDesc type, void *val)
         *(ustring *)val = ustring(format_list);
         return true;
     }
+    if (name == "input_format_list" && type == TypeDesc::TypeString) {
+        if (input_format_list.empty())
+            pvt::catalog_all_plugins (plugin_searchpath.string());
+        *(ustring *)val = ustring(input_format_list);
+        return true;
+    }
+    if (name == "output_format_list" && type == TypeDesc::TypeString) {
+        if (output_format_list.empty())
+            pvt::catalog_all_plugins (plugin_searchpath.string());
+        *(ustring *)val = ustring(output_format_list);
+        return true;
+    }
     if (name == "extension_list" && type == TypeDesc::TypeString) {
         if (extension_list.empty())
             pvt::catalog_all_plugins (plugin_searchpath.string());
         *(ustring *)val = ustring(extension_list);
+        return true;
+    }
+    if (name == "library_list" && type == TypeDesc::TypeString) {
+        if (library_list.empty())
+            pvt::catalog_all_plugins (plugin_searchpath.string());
+        *(ustring *)val = ustring(library_list);
         return true;
     }
     if (name == "exr_threads" && type == TypeDesc::TypeInt) {
@@ -440,37 +473,19 @@ pvt::convert_from_float (const float *src, void *dst, size_t nvals,
 
 const void *
 pvt::parallel_convert_from_float (const float *src, void *dst, size_t nvals,
-                                  TypeDesc format, int nthreads)
+                                  TypeDesc format)
 {
     if (format.basetype == TypeDesc::FLOAT)
         return src;
 
-    const size_t quanta = 30000;
-    if (nvals < quanta)
-        nthreads = 1;
-
-    if (nthreads <= 0)
-        nthreads = oiio_threads;
-
+    const int64_t blocksize = 100000;   // good choice?
     long long quant_min, quant_max;
     get_default_quantize (format, quant_min, quant_max);
 
-    if (nthreads <= 1)
-        return convert_from_float (src, dst, nvals, quant_min, quant_max, format);
-
-    boost::thread_group threads;
-    size_t blocksize = std::max (quanta, size_t((nvals + nthreads - 1) / nthreads));
-    for (size_t i = 0;  i < size_t(nthreads);  i++) {
-        size_t begin = i * blocksize;
-        if (begin >= nvals)
-            break;  // no more work to divvy up
-        size_t end = std::min (begin + blocksize, nvals);
-        threads.add_thread (new boost::thread (
-                                boost::bind (convert_from_float, src+begin,
-                                             (char *)dst+begin*format.size(),
-                                             end-begin, quant_min, quant_max, format)));
-    }
-    threads.join_all ();
+    parallel_for_chunked (0, int64_t(nvals), blocksize, [=](int64_t b, int64_t e){
+        convert_from_float (src+b, (char *)dst+b*format.size(),
+                            e-b, quant_min, quant_max, format);
+    });
     return dst;
 }
 
@@ -494,7 +509,7 @@ convert_types (TypeDesc src_type, const void *src,
 
     // Conversion is to a non-float type
 
-    boost::scoped_array<float> tmp;   // In case we need a lot of temp space
+    std::unique_ptr<float[]> tmp;   // In case we need a lot of temp space
     float *buf = (float *)src;
     if (src_type != TypeDesc::TypeFloat) {
         // If src is also not float, convert through an intermediate buffer
@@ -580,44 +595,6 @@ convert_image (int nchannels, int width, int height, int depth,
 
 
 
-namespace {
-// This nonsense is just to get around the 10-arg limits of boost::bind
-// for compilers that don't have variadic templates.
-struct convert_image_wrapper {
-    convert_image_wrapper (int nchannels, int width, int height, int depth,
-              const void *src, TypeDesc src_type,
-              stride_t src_xstride, stride_t src_ystride, stride_t src_zstride,
-              void *dst, TypeDesc dst_type,
-              stride_t dst_xstride, stride_t dst_ystride, stride_t dst_zstride,
-              int alpha_channel, int z_channel)
-        : nchannels(nchannels), width(width), height(height), depth(depth),
-          src(src), src_type(src_type), src_xstride(src_xstride),
-          src_ystride(src_ystride), src_zstride(src_zstride), dst(dst),
-          dst_type(dst_type), dst_xstride(dst_xstride),
-          dst_ystride(dst_ystride), dst_zstride(dst_zstride),
-          alpha_channel(alpha_channel), z_channel(z_channel)
-    { }
-        
-    void operator() () {
-        convert_image (nchannels, width, height, depth,
-                       src, src_type, src_xstride, src_ystride, src_zstride, 
-                       dst, dst_type, dst_xstride, dst_ystride, dst_zstride,
-                       alpha_channel, z_channel);
-    }
-private:
-    int nchannels, width, height, depth;
-    const void *src;
-    TypeDesc src_type;
-    stride_t src_xstride, src_ystride, src_zstride;
-    void *dst;
-    TypeDesc dst_type;
-    stride_t dst_xstride, dst_ystride, dst_zstride;
-    int alpha_channel, z_channel;
-};
-}  // anon namespace
-
-
-
 bool
 parallel_convert_image (int nchannels, int width, int height, int depth,
                const void *src, TypeDesc src_type,
@@ -628,15 +605,12 @@ parallel_convert_image (int nchannels, int width, int height, int depth,
                stride_t dst_zstride,
                int alpha_channel, int z_channel, int nthreads)
 {
-    if (imagesize_t(width)*height*depth*nchannels < 30000)
-        nthreads = 1;
-
     if (nthreads <= 0)
         nthreads = oiio_threads;
-
+    nthreads = clamp (int((int64_t(width)*height*depth*nchannels)/100000), 1, nthreads);
     if (nthreads <= 1)
         return convert_image (nchannels, width, height, depth,
-                        src, src_type, src_xstride, src_ystride, src_zstride, 
+                        src, src_type, src_xstride, src_ystride, src_zstride,
                         dst, dst_type, dst_xstride, dst_ystride, dst_zstride,
                         alpha_channel, z_channel);
 
@@ -645,22 +619,15 @@ parallel_convert_image (int nchannels, int width, int height, int depth,
     ImageSpec::auto_stride (dst_xstride, dst_ystride, dst_zstride,
                             dst_type, nchannels, width, height);
 
-    boost::thread_group threads;
-    int blocksize = std::max (1, (height + nthreads - 1) / nthreads);
-    for (int i = 0;  i < nthreads;  i++) {
-        int ybegin = i * blocksize;
-        if (ybegin >= height)
-            break;  // no more work to divvy up
-        int yend = std::min (ybegin + blocksize, height);
-        convert_image_wrapper ciw (nchannels, width, yend-ybegin, depth,
-                                   (const char *)src+src_ystride*ybegin,
-                                   src_type, src_xstride, src_ystride, src_zstride,
-                                   (char *)dst+dst_ystride*ybegin,
-                                   dst_type, dst_xstride, dst_ystride, dst_zstride,
-                                   alpha_channel, z_channel);
-        threads.add_thread (new boost::thread (ciw));
-    }
-    threads.join_all ();
+    int blocksize = std::max (1, height / nthreads);
+    parallel_for_chunked (0, height, blocksize, [=](int id, int64_t ybegin, int64_t yend){
+        convert_image (nchannels, width, yend-ybegin, depth,
+                       (const char *)src+src_ystride*ybegin,
+                       src_type, src_xstride, src_ystride, src_zstride,
+                       (char *)dst+dst_ystride*ybegin,
+                       dst_type, dst_xstride, dst_ystride, dst_zstride,
+                       alpha_channel, z_channel);
+    });
     return true;
 }
 

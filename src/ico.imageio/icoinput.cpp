@@ -35,12 +35,12 @@
 #include "ico.h"
 #include "../png.imageio/png_pvt.h"
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/typedesc.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/fmath.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/typedesc.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/thread.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/fmath.h>
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
@@ -107,6 +107,8 @@ OIIO_PLUGIN_EXPORTS_BEGIN
 OIIO_EXPORT ImageInput *ico_input_imageio_create () { return new ICOInput; }
 
 OIIO_EXPORT int ico_imageio_version = OIIO_PLUGIN_VERSION;
+
+OIIO_EXPORT const char* ico_imageio_library_version () { return NULL; }
 
 OIIO_EXPORT const char * ico_input_extensions[] = {
     "ico", NULL

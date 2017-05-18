@@ -35,10 +35,10 @@
 
 #include <OpenEXR/half.h>
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/ustring.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/typedesc.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/ustring.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/typedesc.h>
 
 
 OIIO_NAMESPACE_BEGIN
@@ -299,6 +299,8 @@ TypeDesc::fromstring (string_view typestring)
         t = TypeMatrix33;
     else if (type == "matrix" || type == "matrix44")
         t = TypeMatrix44;
+    else if (type == "timecode")
+        t = TypeTimeCode;
     else {
         return 0;  // unknown
     }

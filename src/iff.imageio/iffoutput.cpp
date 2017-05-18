@@ -133,7 +133,7 @@ IffOutput::open (const std::string &name, const ImageSpec &spec,
     m_iff_header.author = m_spec.get_string_attribute ("Artist");
     m_iff_header.date = m_spec.get_string_attribute ("DateTime");
     
-    if (!m_iff_header.write_header (m_fd)) {
+    if (!write_header (m_iff_header)) {
         error ("\"%s\": could not write iff header", m_filename.c_str ());
         close ();
         return false;
@@ -626,15 +626,12 @@ IffOutput::compress_rle_channel (
         const int max = std::min (0x7f + 1, static_cast<int>(end - in));
         if (max > 0)
         {
-            if (in[0] != in[1])
-            {
-                // compress verbatim
-                compress_verbatim (in, out, max);
-            }
-            else
-            {
+            if (in < (end-1) && in[0] == in[1]) { 
                 // compress duplicate
                 compress_duplicate (in, out, max);
+            } else {
+                // compress verbatim
+                compress_verbatim (in, out, max);
             }
         }
     }

@@ -38,21 +38,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <OpenImageIO/hash.h>
 #include <OpenImageIO/dassert.h>
 
-#if OIIO_CPLUSPLUS_VERSION >= 11
-#  include <unordered_map>
-#else /* FIXME(C++11): remove this after making C++11 the baseline */
-#  include <boost/unordered_map.hpp>
-#endif
-
 OIIO_NAMESPACE_BEGIN
-
-
-// Define OIIO::unordered_map as either std or boost.
-#if OIIO_CPLUSPLUS_VERSION >= 11
-using std::unordered_map;
-#else /* FIXME(C++11): remove this after making C++11 the baseline */
-using boost::unordered_map;
-#endif
 
 
 /// unordered_map_concurrent provides an unordered_map replacement that
@@ -87,7 +73,7 @@ using boost::unordered_map;
 /// lock and obtain a lock on the next bin.
 ///
 
-template<class KEY, class VALUE, class HASH=boost::hash<KEY>,
+template<class KEY, class VALUE, class HASH=std::hash<KEY>,
          class PRED=std::equal_to<KEY>, size_t BINS=16,
          class BINMAP=unordered_map<KEY,VALUE,HASH,PRED> >
 class unordered_map_concurrent {
@@ -366,6 +352,9 @@ public:
 
     /// Return true if the entire map is empty.
     bool empty() { return m_size == 0; }
+
+    /// Return the total number of entries in the map.
+    size_t size () { return size_t(m_size); }
 
     /// Expliticly lock the bin that will contain the key (regardless of
     /// whether there is such an entry in the map), and return its bin

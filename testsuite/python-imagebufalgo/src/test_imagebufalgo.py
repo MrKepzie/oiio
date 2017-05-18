@@ -247,6 +247,16 @@ try:
                               (.2126,.7152,.0722))
     write (b, "chsum.tif", oiio.UINT8)
 
+    # color_map
+    b = ImageBuf()
+    ImageBufAlgo.color_map (b, ImageBuf("../oiiotool/src/tahoe-tiny.tif"),
+                           -1, "spectrum")
+    write (b, "colormap-spectrum.tif", oiio.UINT8)
+    b = ImageBuf()
+    ImageBufAlgo.color_map (b, ImageBuf("../oiiotool/src/tahoe-tiny.tif"),
+                           -1, 3, 3, (.25,.25,.25,0,.5,0,1,0,0))
+    write (b, "colormap-custom.tif", oiio.UINT8)
+
     # premult/unpremult
     b = make_constimage(100,100,4,oiio.FLOAT,(.1,.1,.1,1))
     ImageBufAlgo.fill (b, (.2,.2,.2,.5), oiio.ROI(50,80,50,80))
@@ -264,6 +274,17 @@ try:
     # FIXME - colorconvert, ociolook need tests
 
     # computePixelStats
+    b = ImageBuf ("../oiiotool/src/tahoe-small.tif")
+    stats = oiio.PixelStats()
+    ImageBufAlgo.computePixelStats (b, stats)
+    print ("Stats for tahoe-small.tif:")
+    print "  min         = ", stats.min
+    print "  max         = ", stats.max
+    print "  avg         = ", stats.avg
+    print "  stddev      = ", stats.stddev
+    print "  nancount    = ", stats.nancount
+    print "  infcount    = ", stats.infcount
+    print "  finitecount = ", stats.finitecount
 
     compresults = oiio.CompareResults()
     ImageBufAlgo.compare (ImageBuf("flip.tif"), ImageBuf("flop.tif"),
@@ -341,6 +362,16 @@ try:
                                 5, 5)
     write (b, "tahoe-median.tif", oiio.UINT8)
 
+    # Dilate/erode
+    b = ImageBuf()
+    undilated = ImageBuf("../oiiotool/src/morphsource.tif")
+    ImageBufAlgo.dilate (b, undilated, 3, 3)
+    write (b, "dilate.tif", oiio.UINT8)
+    b = ImageBuf()
+    ImageBufAlgo.erode (b, undilated, 3, 3)
+    write (b, "erode.tif", oiio.UINT8)
+    undilated = None
+
     # unsharp_mask
     b = ImageBuf()
     ImageBufAlgo.unsharp_mask (b, ImageBuf("../oiiotool/src/tahoe-small.tif"),
@@ -372,7 +403,7 @@ try:
     inv = ImageBuf()
     ImageBufAlgo.ifft (inv, fft)
     b = ImageBuf()
-    ImageBufAlgo.channels (b, inv, (0,0,0))
+    ImageBufAlgo.channels (b, inv, (0,))
     write (b, "ifft.exr", oiio.FLOAT)
     inv.clear()
     fft.clear()
@@ -413,6 +444,15 @@ try:
     ImageBufAlgo.render_text (b, 50, 120, "Go Big Red!",
                               42, "", (1,0,0))
     write (b, "text.tif", oiio.UINT8)
+
+    b = make_constimage (320, 240, 3, oiio.FLOAT)
+    broi = b.roi
+    textsize = ImageBufAlgo.text_size ("Centered", 40)
+    if textsize.defined :
+        x = broi.xbegin + broi.width/2  - (textsize.xbegin + textsize.width/2)
+        y = broi.ybegin + broi.height/2 - (textsize.ybegin + textsize.height/2)
+        ImageBufAlgo.render_text (b, x, y, "Centered", 40)
+    write (b, "textcentered.tif", oiio.UINT8)
 
     # histogram, histogram_draw,
 

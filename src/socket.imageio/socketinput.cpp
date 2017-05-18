@@ -28,7 +28,7 @@
   (This is the Modified BSD License)
 */
 
-#include "OpenImageIO/imageio.h"
+#include <OpenImageIO/imageio.h>
 #include "socket_pvt.h"
 
 
@@ -38,6 +38,7 @@ OIIO_PLUGIN_NAMESPACE_BEGIN
 OIIO_PLUGIN_EXPORTS_BEGIN
 
     OIIO_EXPORT int socket_imageio_version = OIIO_PLUGIN_VERSION;
+    OIIO_EXPORT const char* socket_imageio_library_version() { return NULL; }
     OIIO_EXPORT ImageInput *socket_input_imageio_create () {
         return new SocketInput;
     }
@@ -167,7 +168,7 @@ SocketInput::accept_connection(const std::string &name)
     int port = atoi (rest_args["port"].c_str ());
 
     try {
-        acceptor = OIIO::shared_ptr <ip::tcp::acceptor>
+        acceptor = std::shared_ptr <ip::tcp::acceptor>
             (new ip::tcp::acceptor (io, ip::tcp::endpoint (ip::tcp::v4(), port)));
         acceptor->accept (socket);
     } catch (boost::system::system_error &err) {

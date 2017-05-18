@@ -29,8 +29,8 @@
 */
 #include <cstdio>
 #include <webp/encode.h>
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/imageio.h"
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/imageio.h>
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
@@ -74,7 +74,10 @@ class WebpOutput : public ImageOutput
 int
 WebpOutput::supports (string_view feature) const
 {
-    return (feature == "alpha");
+    return feature == "tiles"
+        || feature == "alpha"
+        || feature == "random_access"
+        || feature == "rewrite";
 }
 
 

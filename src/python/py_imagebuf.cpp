@@ -28,10 +28,10 @@
   (This is the Modified BSD License)
 */
 
-#include <boost/scoped_array.hpp>
+#include <memory>
 
 #include "py_oiio.h"
-#include "OpenImageIO/platform.h"
+#include <OpenImageIO/platform.h>
 
 
 namespace PyOpenImageIO
@@ -306,7 +306,7 @@ ImageBuf_get_pixels (const ImageBuf &buf, TypeDesc format, ROI roi=ROI::All())
     roi.chend = std::min (roi.chend, buf.nchannels()+1);
 
     size_t size = (size_t) roi.npixels() * roi.nchannels() * format.size();
-    boost::scoped_array<char> data (new char [size]);
+    std::unique_ptr<char[]> data (new char [size]);
     if (! buf.get_pixels (roi, format, &data[0])) {
         return object(handle<>(Py_None));
     }
@@ -416,9 +416,13 @@ void declare_imagebuf()
         .def(init<const ImageSpec&>())
 
         .def("clear", &ImageBuf::clear)
-        .def("reset", &ImageBuf_reset_name)
-        .def("reset", &ImageBuf_reset_name2)
-        .def("reset", &ImageBuf_reset_name_config)
+        .def("reset", &ImageBuf_reset_name,
+             (arg("name")))
+        .def("reset", &ImageBuf_reset_name2,
+             (arg("name"), arg("subimage")=0, arg("miplevel")=0))
+        .def("reset", &ImageBuf_reset_name_config,
+             (arg("name"), arg("subimage")=0, arg("miplevel")=0,
+              arg("config")=ImageSpec()))
         .def("reset", &ImageBuf_reset_spec)
         .add_property ("initialized", &ImageBuf::initialized)
         .def("init_spec", &ImageBuf::init_spec)
@@ -480,6 +484,8 @@ void declare_imagebuf()
         .add_property("has_error",   &ImageBuf::has_error)
         .def("geterror",    &ImageBuf::geterror)
 
+        .def("pixelindex", &ImageBuf::pixelindex,
+             (arg("x"), arg("y"), arg("z"), arg("check_range")=false))
         .def("copy_metadata", &ImageBuf::copy_metadata)
         .def("copy_pixels", &ImageBuf::copy_pixels)
         .def("copy",  &ImageBuf_copy,

@@ -37,6 +37,7 @@ using namespace bmp_pvt;
 OIIO_PLUGIN_EXPORTS_BEGIN
 
     OIIO_EXPORT int bmp_imageio_version = OIIO_PLUGIN_VERSION;
+    OIIO_EXPORT const char* bmp_imageio_library_version () { return NULL; }
     OIIO_EXPORT ImageInput *bmp_input_imageio_create () {
         return new BmpInput;
     }
@@ -105,26 +106,26 @@ BmpInput::open (const std::string &name, ImageSpec &spec)
     switch (m_dib_header.bpp) {
         case 32 :
         case 24 :
-            m_scanline_size = ((m_spec.width * m_spec.nchannels) + 3) & ~3;
+            m_padded_scanline_size = ((m_spec.width * m_spec.nchannels) + 3) & ~3;
             break;
         case 16 :
-            m_scanline_size = ((m_spec.width << 1) + 3) & ~3;
+            m_padded_scanline_size = ((m_spec.width << 1) + 3) & ~3;
             m_spec.attribute ("oiio:BitsPerSample", 4);
             break;
         case  8 :
-            m_scanline_size = (m_spec.width + 3) & ~3;
+            m_padded_scanline_size = (m_spec.width + 3) & ~3;
             if (! read_color_table ())
                 return false;
             break;
         case 4 :
             swidth = (m_spec.width + 1) / 2;
-            m_scanline_size = (swidth + 3) & ~3;
+            m_padded_scanline_size = (swidth + 3) & ~3;
             if (! read_color_table ())
                 return false;
             break;
         case 1 :
             swidth = (m_spec.width + 7) / 8;
-            m_scanline_size = (swidth + 3) & ~3;
+            m_padded_scanline_size = (swidth + 3) & ~3;
             if (! read_color_table ())
                 return false;
             break;
@@ -149,13 +150,13 @@ BmpInput::read_native_scanline (int y, int z, void *data)
     // if the height is positive scanlines are stored bottom-up
     if (m_dib_header.width >= 0)
         y = m_spec.height - y - 1;
-    const int scanline_off = y * m_scanline_size;
+    const int scanline_off = y * m_padded_scanline_size;
 
-    std::vector<unsigned char> fscanline (m_scanline_size);
+    std::vector<unsigned char> fscanline (m_padded_scanline_size);
     fsetpos (m_fd, &m_image_start);
     fseek (m_fd, scanline_off, SEEK_CUR);
-    size_t n = fread (&fscanline[0], 1, m_scanline_size, m_fd);
-    if (n != (size_t)m_scanline_size) {
+    size_t n = fread (&fscanline[0], 1, m_padded_scanline_size, m_fd);
+    if (n != (size_t)m_padded_scanline_size) {
         if (feof (m_fd))
             error ("Hit end of file unexpectedly");
         else

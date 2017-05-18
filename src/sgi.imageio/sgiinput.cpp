@@ -28,13 +28,14 @@
   (This is the Modified BSD License)
 */
 #include "sgi_pvt.h"
-#include "OpenImageIO/dassert.h"
+#include <OpenImageIO/dassert.h>
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
 // Obligatory material to make this a recognizeable imageio plugin:
 OIIO_PLUGIN_EXPORTS_BEGIN
     OIIO_EXPORT int sgi_imageio_version = OIIO_PLUGIN_VERSION;
+    OIIO_EXPORT const char* sgi_imageio_library_version () { return NULL; }
     OIIO_EXPORT ImageInput *sgi_input_imageio_create () {
         return new SgiInput;
     }

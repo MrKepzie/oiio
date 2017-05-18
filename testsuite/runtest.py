@@ -42,6 +42,7 @@ tmpdir = "."
 tmpdir = os.path.abspath (tmpdir)
 
 refdir = "ref/"
+refdirlist = [ refdir ]
 parent = "../../../../../"
 test_source_dir = "../../../../testsuite/" + os.path.basename(os.path.abspath(srcdir))
 
@@ -51,8 +52,10 @@ failureok = 0
 failthresh = 0.004
 hardfail = 0.012
 failpercent = 0.02
+anymatch = False
 
-image_extensions = [ ".tif", ".exr", ".jpg", ".png", ".rla" ]
+image_extensions = [ ".tif", ".tx", ".exr", ".jpg", ".png", ".rla",
+                     ".dpx", ".iff", ".psd" ]
 
 # print ("srcdir = " + srcdir)
 # print ("tmpdir = " + tmpdir)
@@ -60,12 +63,25 @@ image_extensions = [ ".tif", ".exr", ".jpg", ".png", ".rla" ]
 # print ("refdir = " + refdir)
 # print ("test source dir = " + test_source_dir)
 
-if not os.path.exists("./ref") :
-    os.symlink (os.path.join (test_source_dir, "ref"), "./ref")
-if os.path.exists (os.path.join (test_source_dir, "src")) and not os.path.exists("./src") :
-    os.symlink (os.path.join (test_source_dir, "src"), "./src")
-if not os.path.exists("../common") :
-    os.symlink ("../../../testsuite/common", "../common")
+if platform.system() == 'Windows' :
+    if not os.path.exists("./ref") :
+        shutil.copytree (os.path.join (test_source_dir, "ref"), "./ref")
+    if os.path.exists (os.path.join (test_source_dir, "src")) and not os.path.exists("./src") :
+        shutil.copytree (os.path.join (test_source_dir, "src"), "./src")
+    # if not os.path.exists("../data") :
+    #     shutil.copytree ("../../../testsuite/data", "..")
+    # if not os.path.exists("../common") :
+    #     shutil.copytree ("../../../testsuite/common", "..")
+else :
+    if not os.path.exists("./ref") :
+        os.symlink (os.path.join (test_source_dir, "ref"), "./ref")
+    if os.path.exists (os.path.join (test_source_dir, "src")) and not os.path.exists("./src") :
+        os.symlink (os.path.join (test_source_dir, "src"), "./src")
+    if not os.path.exists("./data") :
+        os.symlink (test_source_dir, "./data")
+    if not os.path.exists("../common") :
+        os.symlink ("../../../testsuite/common", "../common")
+
 
 ###########################################################################
 
@@ -124,12 +140,16 @@ def oiio_app (app):
 # Construct a command that will print info for an image, appending output to
 # the file "out.txt".  If 'safematch' is nonzero, it will exclude printing
 # of fields that tend to change from run to run or release to release.
-def info_command (file, extraargs="", safematch=0, hash=True) :
+def info_command (file, extraargs="", safematch=False, hash=True,
+                  verbose=True) :
+    args = "--info"
+    if verbose :
+        args += " -v -a"
     if safematch :
-        extraargs += " --no-metamatch \"DateTime|Software|OriginatingProgram|ImageHistory\""
+        args += " --no-metamatch \"DateTime|Software|OriginatingProgram|ImageHistory\""
     if hash :
-        extraargs += " --hash"
-    return (oiio_app("oiiotool") + "--info -v -a " + extraargs
+        args += " --hash"
+    return (oiio_app("oiiotool") + args + " " + extraargs
             + " " + oiio_relpath(file,tmpdir) + " >> out.txt ;\n")
 
 
@@ -178,24 +198,29 @@ def maketx_command (infile, outfile, extraargs="",
 # correctly).  If testwrite is nonzero, also iconvert the file to make a
 # copy (tests writing that format), and then idiff to make sure it
 # matches the original.
-def rw_command (dir, filename, testwrite=1, use_oiiotool=0, extraargs="",
-                preargs="", idiffextraargs="") :
+def rw_command (dir, filename, testwrite=True, use_oiiotool=False, extraargs="",
+                preargs="", idiffextraargs="", output_filename="",
+                safematch=False, printinfo=True) :
     fn = oiio_relpath (dir + "/" + filename, tmpdir)
-    cmd = (oiio_app("oiiotool") + " --info -v -a --hash " + fn
-           + " >> out.txt ;\n")
+    if printinfo :
+        cmd = info_command (fn, safematch=safematch)
+    else :
+        cmd = ""
+    if output_filename == "" :
+        output_filename = filename
     if testwrite :
         if use_oiiotool :
             cmd = (cmd + oiio_app("oiiotool") + preargs + " " + fn
-                   + " " + extraargs + " -o " + filename + " >> out.txt ;\n")
+                   + " " + extraargs + " -o " + output_filename + " >> out.txt ;\n")
         else :
             cmd = (cmd + oiio_app("iconvert") + preargs + " " + fn
-                   + " " + extraargs + " " + filename + " >> out.txt ;\n")
+                   + " " + extraargs + " " + output_filename + " >> out.txt ;\n")
         cmd = (cmd + oiio_app("idiff") + " -a " + fn
                + " -fail " + str(failthresh)
                + " -failpercent " + str(failpercent)
                + " -hardfail " + str(hardfail)
                + " -warn " + str(2*failthresh)
-               + " " + idiffextraargs + " " + filename + " >> out.txt ;\n")
+               + " " + idiffextraargs + " " + output_filename + " >> out.txt ;\n")
     return cmd
 
 
@@ -217,6 +242,48 @@ def oiiotool (args, silent=False, concat=True) :
 
 
 
+# Check one output file against reference images in a list of reference
+# directories. For each directory, it will first check for a match under
+# the identical name, and if that fails, it will look for alternatives of
+# the form "basename-*.ext" (or ANY match in the ref directory, if anymatch
+# is True).
+def checkref (name, refdirlist) :
+    # Break the output into prefix+extension
+    (prefix, extension) = os.path.splitext(name)
+    ok = 0
+    for ref in refdirlist :
+        # We will first compare name to ref/name, and if that fails, we will
+        # compare it to everything else that matches ref/prefix-*.extension.
+        # That allows us to have multiple matching variants for different
+        # platforms, etc.
+        defaulttest = os.path.join(ref,name)
+        if anymatch :
+            pattern = "*.*"
+        else :
+            pattern = prefix+"-*"+extension+"*"
+        for testfile in ([defaulttest] + glob.glob (os.path.join (ref, pattern))) :
+            if not os.path.exists(testfile) :
+                continue
+            # print ("comparing " + name + " to " + testfile)
+            if extension in image_extensions :
+                # images -- use idiff
+                cmpcommand = diff_command (name, testfile, concat=False, silent=True)
+                cmpresult = os.system (cmpcommand)
+            elif extension == ".txt" :
+                cmpresult = text_diff (name, testfile, name + ".diff")
+            else :
+                # anything else
+                cmpresult = 0
+                if os.path.exists(testfile) and filecmp.cmp (name, testfile) :
+                    cmpresult = 0
+                else :
+                    cmpresult = 1
+            if cmpresult == 0 :
+                return (True, testfile)   # we're done
+    return (False, defaulttest)
+
+
+
 # Run 'command'.  For each file in 'outputs', compare it to the copy
 # in 'ref/'.  If all outputs match their reference copies, return 0
 # to pass.  If any outputs do not match their references return 1 to
@@ -226,6 +293,8 @@ def runtest (command, outputs, failureok=0) :
 #    print ("working dir = " + tmpdir)
     os.chdir (srcdir)
     open ("out.txt", "w").close()    # truncate out.txt
+    if os.path.isfile("debug.log") :
+        os.remove ("debug.log")
 
     if options.path != "" :
         sys.path = [options.path] + sys.path
@@ -249,28 +318,8 @@ def runtest (command, outputs, failureok=0) :
             err = 1
 
     for out in outputs :
-        extension = os.path.splitext(out)[1]
-        ok = 0
-        # We will first compare out to ref/out, and if that fails, we
-        # will compare it to everything else with the same extension in
-        # the ref directory.  That allows us to have multiple matching
-        # variants for different platforms, etc.
-        for testfile in ([os.path.join(refdir,out)] + glob.glob (os.path.join (refdir, "*"+extension))) :
-            # print ("comparing " + out + " to " + testfile)
-            if extension in image_extensions :
-                print ("Testing " + testfile)
-                # images -- use idiff
-                cmpcommand = diff_command (out, testfile, concat=False, silent=True)
-                # print ("cmpcommand = " + cmpcommand)
-                cmpresult = os.system (cmpcommand)
-            elif extension == ".txt" :
-                cmpresult = text_diff (out, testfile, out + ".diff")
-            else :
-                # anything else
-                cmpresult = 0 if filecmp.cmp (out, testfile) else 1
-            if cmpresult == 0 :
-                ok = 1
-                break      # we're done
+        (prefix, extension) = os.path.splitext(out)
+        (ok, testfile) = checkref (out, refdirlist)
 
         if ok :
             if extension in image_extensions :
@@ -286,13 +335,20 @@ def runtest (command, outputs, failureok=0) :
                 # file and the diff, for easy debugging.
                 print ("-----" + out + "----->")
                 print (open(out,'r').read() + "<----------")
+                print ("-----" + testfile + "----->")
+                print (open(testfile,'r').read() + "<----------")
+                os.system ("ls -al " +out+" "+testfile)
                 print ("Diff was:\n-------")
                 print (open (out+".diff", 'rU').read())
             if extension in image_extensions :
                 # If we failed to get a match for an image, send the idiff
                 # results to the console
-                os.system (diff_command (out, os.path.join (refdir, out), silent=False))
-
+                os.system (diff_command (out, testfile, silent=False))
+            if os.path.isfile("debug.log") and os.path.getsize("debug.log") :
+                print ("---   DEBUG LOG   ---\n")
+                with open("debug.log", "r") as flog :
+                    print flog.read()
+                print ("--- END DEBUG LOG ---\n")
     return (err)
 
 
@@ -309,8 +365,9 @@ with open(os.path.join(test_source_dir,"run.py")) as f:
     exec (code)
 
 # Allow a little more slop for slight pixel differences when in DEBUG
-# mode or when running on remote Travis-CI machines.
+# mode or when running on remote Travis-CI or Appveyor machines.
 if (("TRAVIS" in os.environ and os.environ["TRAVIS"]) or
+    ("APPVEYOR" in os.environ and os.environ["APPVEYOR"]) or
     ("DEBUG" in os.environ and os.environ["DEBUG"])) :
     failthresh *= 2.0
     hardfail *= 2.0

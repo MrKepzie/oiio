@@ -31,10 +31,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
-#include <errno.h>
+#include <cerrno>
 #include <fstream>
 #include <map>
 #include <numeric>
+#include <memory>
 
 #include <OpenEXR/ImfTestFile.h>
 #include <OpenEXR/ImfInputFile.h>
@@ -57,6 +58,7 @@
 #include <OpenEXR/ImfKeyCodeAttribute.h>
 #include <OpenEXR/ImfEnvmapAttribute.h>
 #include <OpenEXR/ImfCompressionAttribute.h>
+#include <OpenEXR/ImfChromaticitiesAttribute.h>
 #include <OpenEXR/IexBaseExc.h>
 #include <OpenEXR/IexThrowErrnoExc.h>
 #ifdef USE_OPENEXR_VERSION2
@@ -77,17 +79,16 @@
 
 #include <OpenEXR/ImfCRgbaFile.h>
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/fmath.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/imagebufalgo_util.h"
-#include "OpenImageIO/deepdata.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/thread.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/imagebufalgo_util.h>
+#include <OpenImageIO/deepdata.h>
+#include <OpenImageIO/sysutil.h>
 
-#include <boost/scoped_array.hpp>
-#include <boost/scoped_ptr.hpp>
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
@@ -101,49 +102,40 @@ public:
     OpenEXRInputStream (const char *filename) : Imf::IStream (filename) {
         // The reason we have this class is for this line, so that we
         // can correctly handle UTF-8 file paths on Windows
-        {
-            std::istream* ifsraw;
-            Filesystem::open (&ifsraw, filename, std::ios_base::binary);
-            if (ifsraw) {
-                ifs.reset(ifsraw);
-            }
-        }
-        if (!ifs)
+        Filesystem::open (ifs, filename, std::ios_base::binary);
+        if (!ifs) 
             Iex::throwErrnoExc ();
     }
     virtual bool read (char c[], int n) {
-        if (!ifs)
+        if (!ifs) 
             throw Iex::InputExc ("Unexpected end of file.");
+		
         errno = 0;
-        ifs->read (c, n);
+        ifs.read (c, n);
         return check_error ();
     }
     virtual Imath::Int64 tellg () {
-        return ifs ? std::streamoff (ifs->tellg ()) : 0;
+        return std::streamoff (ifs.tellg ());
     }
     virtual void seekg (Imath::Int64 pos) {
-        if (!ifs) {
-            Iex::throwErrnoExc ();
-        }
-        ifs->seekg (pos);
+        ifs.seekg (pos);
         check_error ();
     }
     virtual void clear () {
-        if (ifs) {
-            ifs->clear ();
-        }
+        ifs.clear ();
     }
 
 private:
     bool check_error () {
         if (!ifs) {
-            if (errno)
+            if (errno) 
                 Iex::throwErrnoExc ();
+			
             return false;
         }
         return true;
     }
-    boost::scoped_ptr<std::istream> ifs;
+    OIIO::ifstream ifs;
 };
 
 
@@ -308,12 +300,11 @@ private:
         // FIXME: Things to consider in the future:
         // preview
         // screenWindowCenter
-        // chromaticities whiteLuminance adoptedNeutral
+        // adoptedNeutral
         // renderingTransform, lookModTransform
         // utcOffset
         // longitude latitude altitude
         // focus isoSpeed
-        // keyCode timeCode framesPerSecond
     }
 };
 
@@ -329,7 +320,14 @@ void set_exr_threads ()
 
     int oiio_threads = 1;
     OIIO::getattribute ("exr_threads", oiio_threads);
-
+    
+    // 0 means all threads in OIIO, but single-threaded in OpenEXR
+    // -1 means single-threaded in OIIO
+    if (oiio_threads == 0) {
+        oiio_threads = Sysutil::hardware_concurrency();
+    } else if (oiio_threads == -1) {
+        oiio_threads = 0;
+    }
     spin_lock lock (exr_threads_mutex);
     if (exr_threads != oiio_threads) {
         exr_threads = oiio_threads;
@@ -482,7 +480,11 @@ OpenEXRInput::PartInfo::parse_header (const Imf::Header *header)
     spec.full_depth = 1;
     spec.tile_depth = 1;
 
-    if (header->hasTileDescription()) {
+    if (header->hasTileDescription()
+#if USE_OPENEXR_VERSION2
+        && Strutil::icontains(header->type(), "tile")
+#endif
+        ) {
         const Imf::TileDescription &td (header->tileDescription());
         spec.tile_width = td.xSize;
         spec.tile_height = td.ySize;
@@ -575,6 +577,7 @@ OpenEXRInput::PartInfo::parse_header (const Imf::Header *header)
         const Imf::Box2fAttribute *b2fattr;
         const Imf::TimeCodeAttribute *tattr;
         const Imf::KeyCodeAttribute *kcattr;
+        const Imf::ChromaticitiesAttribute *crattr;
 #ifdef USE_OPENEXR_VERSION2
         const Imf::StringVectorAttribute *svattr;
         const Imf::DoubleAttribute *dattr;
@@ -697,6 +700,11 @@ OpenEXRInput::PartInfo::parse_header (const Imf::Header *header)
             if (oname == "keyCode")
                 oname = "smpte:KeyCode";
             spec.attribute(oname, TypeDesc::TypeKeyCode, keycode);
+        } else if (type == "chromaticities" &&
+                   (crattr = header->findTypedAttribute<Imf::ChromaticitiesAttribute> (name))) {
+            const Imf::Chromaticities *chroma = &crattr->value();
+            spec.attribute (oname, TypeDesc(TypeDesc::FLOAT,8),
+                            (const float *)chroma);
         }
         else {
 #if 0
@@ -734,7 +742,7 @@ TypeDesc_from_ImfPixelType (Imf::PixelType ptype)
     case Imf::UINT  : return TypeDesc::UINT;  break;
     case Imf::HALF  : return TypeDesc::HALF;  break;
     case Imf::FLOAT : return TypeDesc::FLOAT; break;
-    default: ASSERT (0);
+    default: ASSERT_MSG (0, "Unknown Imf::PixelType %d", int(ptype));
     }
 }
 
@@ -763,7 +771,8 @@ struct ChanNameHolder {
         }
         static const char * special[] = {
             "R", "Red", "G", "Green", "B", "Blue", "real", "imag",
-            "A", "Alpha", "RA", "RG", "RB", "Z", "Depth", "Zback", NULL
+            "A", "Alpha", "AR", "RA", "AG", "GA", "AB", "BA",
+            "Z", "Depth", "Zback", NULL
         };
         special_index = 10000;
         for (int i = 0; special[i]; ++i)
@@ -803,7 +812,7 @@ OpenEXRInput::PartInfo::query_channels (const Imf::Header *header)
     int c = 0;
     for (Imf::ChannelList::ConstIterator ci = channels.begin();
          ci != channels.end();  ++c, ++ci) {
-        cnh.push_back (ChanNameHolder (ci.name(), c, ci.channel().type));
+        cnh.emplace_back (ci.name(), c, ci.channel().type);
         ++spec.nchannels;
     }
     std::sort (cnh.begin(), cnh.end(), ChanNameHolder::compare_cnh);
@@ -885,7 +894,6 @@ OpenEXRInput::seek_subimage (int subimage, int miplevel, ImageSpec &newspec)
             m_tiled_input_part = NULL;
             m_deep_scanline_input_part = NULL;
             m_deep_tiled_input_part = NULL;
-            ASSERT(0);
             return false;
         } catch (...) {   // catch-all for edge cases or compiler bugs
             error ("OpenEXR exception: unknown");
@@ -893,7 +901,6 @@ OpenEXRInput::seek_subimage (int subimage, int miplevel, ImageSpec &newspec)
             m_tiled_input_part = NULL;
             m_deep_scanline_input_part = NULL;
             m_deep_tiled_input_part = NULL;
-            ASSERT(0);
             return false;
         }
     }
@@ -929,7 +936,7 @@ OpenEXRInput::seek_subimage (int subimage, int miplevel, ImageSpec &newspec)
     } else if (part.levelmode == Imf::RIPMAP_LEVELS) {
         // FIXME
     } else {
-        ASSERT(0);
+        ASSERT_MSG (0, "Unknown levelmode %d", int(part.levelmode));
     }
 
     m_spec.width = w;
@@ -1039,7 +1046,8 @@ OpenEXRInput::read_native_scanlines (int ybegin, int yend, int z,
             m_scanline_input_part->readPixels (ybegin, yend-1);
 #endif
         } else {
-            ASSERT (0);
+            error ("Attempted to read scanline from a non-scanline file.");
+            return false;
         }
     } catch (const std::exception &e) {
         error ("Failed OpenEXR read: %s", e.what());
@@ -1108,8 +1116,8 @@ OpenEXRInput::read_native_tiles (int xbegin, int xend, int ybegin, int yend,
     int nytiles = (yend - ybegin + m_spec.tile_height - 1) / m_spec.tile_height;
     int whole_width = nxtiles * m_spec.tile_width;
     int whole_height = nytiles * m_spec.tile_height;
-    
-    boost::scoped_array<char> tmpbuf;
+
+    std::unique_ptr<char[]> tmpbuf;
     void *origdata = data;
     if (whole_width != (xend-xbegin) || whole_height != (yend-ybegin)) {
         // Deal with the case of reading not a whole number of tiles --
@@ -1145,7 +1153,8 @@ OpenEXRInput::read_native_tiles (int xbegin, int xend, int ybegin, int yend,
                                            m_miplevel, m_miplevel);
 #endif
         } else {
-            ASSERT (0);
+            error ("Attempted to read tiles from a non-tiled file");
+            return false;
         }
         if (data != origdata) {
             stride_t user_scanline_bytes = (xend-xbegin) * pixelbytes;
@@ -1189,16 +1198,18 @@ OpenEXRInput::read_native_deep_scanlines (int ybegin, int yend, int z,
         std::vector<TypeDesc> channeltypes;
         m_spec.get_channelformats (channeltypes);
         deepdata.init (npixels, nchans,
-                       array_view<const TypeDesc>(&channeltypes[chbegin], chend-chbegin));
+                       array_view<const TypeDesc>(&channeltypes[chbegin], chend-chbegin),
+                       spec().channelnames);
+        std::vector<unsigned int> all_samples (npixels);
+        std::vector<void*> pointerbuf (npixels*nchans);
         Imf::DeepFrameBuffer frameBuffer;
         Imf::Slice countslice (Imf::UINT,
-                               (char *)(deepdata.all_samples().data()
+                               (char *)(&all_samples[0]
                                         - m_spec.x
                                         - ybegin*m_spec.width),
                                sizeof(unsigned int),
                                sizeof(unsigned int) * m_spec.width);
         frameBuffer.insertSampleCountSlice (countslice);
-        std::vector<void*> pointerbuf (npixels*nchans);
 
         for (int c = chbegin;  c < chend;  ++c) {
             Imf::DeepSlice slice (part.pixeltype[c],
@@ -1215,6 +1226,7 @@ OpenEXRInput::read_native_deep_scanlines (int ybegin, int yend, int z,
         // Get the sample counts for each pixel and compute the total
         // number of samples and resize the data area appropriately.
         m_deep_scanline_input_part->readPixelSampleCounts (ybegin, yend-1);
+        deepdata.set_all_samples (all_samples);
         deepdata.get_pointers (pointerbuf);
 
         // Read the pixels
@@ -1261,16 +1273,18 @@ OpenEXRInput::read_native_deep_tiles (int xbegin, int xend,
         std::vector<TypeDesc> channeltypes;
         m_spec.get_channelformats (channeltypes);
         deepdata.init (npixels, nchans,
-                       array_view<const TypeDesc>(&channeltypes[chbegin], chend-chbegin));
+                       array_view<const TypeDesc>(&channeltypes[chbegin], chend-chbegin),
+                       spec().channelnames);
+        std::vector<unsigned int> all_samples (npixels);
+        std::vector<void*> pointerbuf (npixels * nchans);
         Imf::DeepFrameBuffer frameBuffer;
         Imf::Slice countslice (Imf::UINT,
-                               (char *)(deepdata.all_samples().data()
+                               (char *)(&all_samples[0]
                                         - xbegin
                                         - ybegin*width),
                                sizeof(unsigned int),
                                sizeof(unsigned int) * width);
         frameBuffer.insertSampleCountSlice (countslice);
-        std::vector<void*> pointerbuf (npixels * nchans);
         for (int c = chbegin;  c < chend;  ++c) {
             Imf::DeepSlice slice (part.pixeltype[c],
                                   (char *)(&pointerbuf[0]+(c-chbegin)
@@ -1294,6 +1308,7 @@ OpenEXRInput::read_native_deep_tiles (int xbegin, int xend,
         m_deep_tiled_input_part->readPixelSampleCounts (
                 firstxtile, firstxtile+xtiles-1,
                 firstytile, firstytile+ytiles-1);
+        deepdata.set_all_samples (all_samples);
         deepdata.get_pointers (pointerbuf);
 
         // Read the pixels
@@ -1318,4 +1333,3 @@ OpenEXRInput::read_native_deep_tiles (int xbegin, int xend,
 
 
 OIIO_PLUGIN_NAMESPACE_END
-

@@ -31,18 +31,59 @@
 // Based on the sample at:
 // http://code.google.com/p/googletest/wiki/GoogleTestPrimer#Writing_the_main()_Function
 
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/imagebuf.h"
-#include "OpenImageIO/imagebufalgo.h"
-#include "OpenImageIO/imagebufalgo_util.h"
-#include "OpenImageIO/unittest.h"
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
+#include <OpenImageIO/imagebufalgo_util.h>
+#include <OpenImageIO/argparse.h>
+#include <OpenImageIO/timer.h>
+#include <OpenImageIO/unittest.h>
 
 #include <iostream>
 #include <iomanip>
 #include <string>
 #include <cstdio>
 
-OIIO_NAMESPACE_USING;
+using namespace OIIO;
+
+
+static int iterations = 1;
+static int numthreads = 16;
+static int ntrials = 1;
+static bool verbose = false;
+static bool wedge = false;
+static int threadcounts[] = { 1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 64, 128, 1024, 1<<30 };
+
+
+static void
+getargs (int argc, char *argv[])
+{
+    bool help = false;
+    ArgParse ap;
+    ap.options ("imagebufalgo_test\n"
+                OIIO_INTRO_STRING "\n"
+                "Usage:  imagebufalgo_test [options]",
+                // "%*", parse_files, "",
+                "--help", &help, "Print help message",
+                "-v", &verbose, "Verbose mode",
+                "--threads %d", &numthreads, 
+                    ustring::format("Number of threads (default: %d)", numthreads).c_str(),
+                "--iters %d", &iterations,
+                    ustring::format("Number of iterations (default: %d)", iterations).c_str(),
+                "--trials %d", &ntrials, "Number of trials",
+                "--wedge", &wedge, "Do a wedge test",
+                NULL);
+    if (ap.parse (argc, (const char**)argv) < 0) {
+        std::cerr << ap.geterror() << std::endl;
+        ap.usage ();
+        exit (EXIT_FAILURE);
+    }
+    if (help) {
+        ap.usage ();
+        exit (EXIT_FAILURE);
+    }
+}
+
 
 
 void test_type_merge ()
@@ -87,7 +128,7 @@ void test_zero_fill ()
     ImageBuf A (spec);
     
     // Set a pixel to an odd value, make sure it takes
-    const float arbitrary1[CHANNELS] = { 0.2, 0.3, 0.4, 0.5 };
+    const float arbitrary1[CHANNELS] = { 0.2f, 0.3f, 0.4f, 0.5f };
     A.setpixel (1, 1, arbitrary1);
     float pixel[CHANNELS];   // test pixel
     A.getpixel (1, 1, pixel);
@@ -106,7 +147,7 @@ void test_zero_fill ()
     }
 
     // Test fill of whole image
-    const float arbitrary2[CHANNELS] = { 0.6, 0.7, 0.3, 0.9 };
+    const float arbitrary2[CHANNELS] = { 0.6f, 0.7f, 0.3f, 0.9f };
     ImageBufAlgo::fill (A, arbitrary2);
     for (int j = 0;  j < HEIGHT;  ++j) {
         for (int i = 0;  i < WIDTH;  ++i) {
@@ -118,7 +159,7 @@ void test_zero_fill ()
     }
 
     // Test fill of partial image
-    const float arbitrary3[CHANNELS] = { 0.42, 0.43, 0.44, 0.45 };
+    const float arbitrary3[CHANNELS] = { 0.42f, 0.43f, 0.44f, 0.45f };
     {
         const int xbegin = 3, xend = 5, ybegin = 0, yend = 4;
         ImageBufAlgo::fill (A, arbitrary3, ROI(xbegin, xend, ybegin, yend));
@@ -153,10 +194,10 @@ void test_crop ()
     A.reset (spec);
     B.reset (spec);
     float arbitrary1[4];
-    arbitrary1[0] = 0.2;
-    arbitrary1[1] = 0.3;
-    arbitrary1[2] = 0.4;
-    arbitrary1[3] = 0.5;
+    arbitrary1[0] = 0.2f;
+    arbitrary1[1] = 0.3f;
+    arbitrary1[2] = 0.4f;
+    arbitrary1[3] = 0.5f;
     ImageBufAlgo::fill (A, arbitrary1);
 
     // Test CUT crop
@@ -532,6 +573,54 @@ void test_computePixelStats ()
 
 
 
+// Tests histogram computation.
+void histogram_computation_test ()
+{
+    const int INPUT_WIDTH   = 64;
+    const int INPUT_HEIGHT  = 64;
+    const int INPUT_CHANNEL = 0;
+
+    const int HISTOGRAM_BINS = 256;
+
+    const int SPIKE1 = 51;  // 0.2f in range 0->1 maps to 51 in range 0->255
+    const int SPIKE2 = 128; // 0.5f in range 0->1 maps to 128 in range 0->255
+    const int SPIKE3 = 204; // 0.8f in range 0->1 maps to 204 in range 0->255
+
+    const int SPIKE1_COUNT = INPUT_WIDTH * 8;
+    const int SPIKE2_COUNT = INPUT_WIDTH * 16;
+    const int SPIKE3_COUNT = INPUT_WIDTH * 40;
+
+    // Create input image with three regions with different pixel values.
+    ImageSpec spec (INPUT_WIDTH, INPUT_HEIGHT, 1, TypeDesc::FLOAT);
+    ImageBuf A (spec);
+
+    float value[] = {0.2f};
+    ImageBufAlgo::fill (A, value, ROI(0, INPUT_WIDTH, 0, 8));
+
+    value[0] = 0.5f;
+    ImageBufAlgo::fill (A, value, ROI(0, INPUT_WIDTH, 8, 24));
+
+    value[0] = 0.8f;
+    ImageBufAlgo::fill (A, value, ROI(0, INPUT_WIDTH, 24, 64));
+
+    // Compute A's histogram.
+    std::vector<imagesize_t> hist;
+    ImageBufAlgo::histogram (A, INPUT_CHANNEL, hist, HISTOGRAM_BINS);
+
+    // Does the histogram size equal the number of bins?
+    OIIO_CHECK_EQUAL (hist.size(), (imagesize_t)HISTOGRAM_BINS);
+
+    // Are the histogram values as expected?
+    OIIO_CHECK_EQUAL (hist[SPIKE1], (imagesize_t)SPIKE1_COUNT);
+    OIIO_CHECK_EQUAL (hist[SPIKE2], (imagesize_t)SPIKE2_COUNT);
+    OIIO_CHECK_EQUAL (hist[SPIKE3], (imagesize_t)SPIKE3_COUNT);
+    for (int i = 0; i < HISTOGRAM_BINS; i++)
+        if (i!=SPIKE1 && i!=SPIKE2 && i!=SPIKE3)
+            OIIO_CHECK_EQUAL (hist[i], 0);
+}
+
+
+
 // Test ability to do a maketx directly from an ImageBuf
 void
 test_maketx_from_imagebuf()
@@ -541,7 +630,7 @@ test_maketx_from_imagebuf()
     const int WIDTH = 16, HEIGHT = 16, CHANNELS = 3;
     ImageSpec spec (WIDTH, HEIGHT, CHANNELS, TypeDesc::FLOAT);
     ImageBuf A (spec);
-    float pink[] = { .5, .3, .3 }, green[] = { .1, .5, .1 };
+    float pink[] = { 0.5f, 0.3f, 0.3f }, green[] = { 0.1f, 0.5f, 0.1f };
     ImageBufAlgo::checker (A, 4, 4, 4, pink, green);
 
     // Write it
@@ -563,10 +652,149 @@ test_maketx_from_imagebuf()
 
 
 
+// Test various IBAprep features
+void
+test_IBAprep ()
+{
+    std::cout << "test IBAprep\n";
+    using namespace ImageBufAlgo;
+    ImageBuf rgb  (ImageSpec(256, 256, 3));  // Basic RGB uint8 image
+    ImageBuf rgba (ImageSpec(256, 256, 4));  // Basic RGBA uint8 image
+
+#define CHECK(...)  { ImageBuf dst; ROI roi; OIIO_CHECK_ASSERT (IBAprep (__VA_ARGS__)); }
+#define CHECK0(...) { ImageBuf dst; ROI roi; OIIO_CHECK_ASSERT (!IBAprep (__VA_ARGS__)); }
+
+    // Test REQUIRE_ALPHA
+    CHECK  (roi, &dst, &rgba, IBAprep_REQUIRE_ALPHA);
+    CHECK0 (roi, &dst, &rgb,  IBAprep_REQUIRE_ALPHA);
+
+    // Test REQUIRE_Z
+    ImageSpec rgbaz_spec (256, 256, 5);
+    rgbaz_spec.channelnames[4] = "Z";
+    rgbaz_spec.z_channel = 4;
+    ImageBuf rgbaz (rgbaz_spec);
+    CHECK  (  roi, &dst, &rgbaz, IBAprep_REQUIRE_Z);
+    CHECK0 (roi, &dst, &rgb, IBAprep_REQUIRE_Z);
+
+    // Test REQUIRE_SAME_NCHANNELS
+    CHECK  (roi, &dst, &rgb, &rgb,  NULL, NULL, IBAprep_REQUIRE_SAME_NCHANNELS);
+    CHECK0 (roi, &dst, &rgb, &rgba, NULL, NULL, IBAprep_REQUIRE_SAME_NCHANNELS);
+
+    // Test NO_SUPPOERT_VOLUME
+    ImageSpec volspec (256, 256, 3);  volspec.depth = 256;
+    ImageBuf vol (volspec);
+    CHECK  (roi, &dst, &rgb, IBAprep_NO_SUPPORT_VOLUME);
+    CHECK0 (roi, &dst, &vol, IBAprep_NO_SUPPORT_VOLUME);
+
+    // Test SUPPORT_DEEP
+    ImageSpec deepspec (256, 256, 3);  deepspec.deep = true;
+    ImageBuf deep (deepspec);
+    CHECK  (roi, &dst, &deep, IBAprep_SUPPORT_DEEP);
+    CHECK0 (roi, &dst, &deep);  // deep should be rejected
+
+    // Test DEEP_MIXED
+    CHECK  (roi, &dst, &deep, &deep, NULL, IBAprep_SUPPORT_DEEP | IBAprep_DEEP_MIXED);
+    CHECK  (roi, &dst, &deep, &rgb, NULL, IBAprep_SUPPORT_DEEP | IBAprep_DEEP_MIXED);
+    CHECK  (roi, &dst, &deep, &deep, NULL, IBAprep_SUPPORT_DEEP);
+    CHECK0 (roi, &dst, &deep, &rgb, NULL, IBAprep_SUPPORT_DEEP);
+
+    // Test DST_FLOAT_PIXELS
+    {
+        ROI roi1, roi2;
+        ImageBuf dst1, dst2;
+        OIIO_CHECK_ASSERT (IBAprep (roi1, &dst1, &rgb));
+        OIIO_CHECK_EQUAL (dst1.spec().format, TypeDesc::UINT8);
+        OIIO_CHECK_ASSERT (IBAprep (roi2, &dst2, &rgb, IBAprep_DST_FLOAT_PIXELS));
+        OIIO_CHECK_EQUAL (dst2.spec().format, TypeDesc::FLOAT);
+    }
+
+    // Test MINIMIZE_NCHANNELS
+    {
+        ROI roi1, roi2;
+        ImageBuf dst1, dst2;
+        OIIO_CHECK_ASSERT (IBAprep (roi1, &dst1, &rgb, &rgba));
+        OIIO_CHECK_EQUAL (dst1.nchannels(), 4);
+        OIIO_CHECK_ASSERT (IBAprep (roi2, &dst2, &rgb, &rgba, NULL, NULL, IBAprep_MINIMIZE_NCHANNELS));
+        OIIO_CHECK_EQUAL (dst2.nchannels(), 3);
+    }
+#undef CHECK
+}
+
+
+
+void
+benchmark_parallel_image (int res, int iters)
+{
+    using namespace ImageBufAlgo;
+    std::cout << "\nTime old parallel_image for " << res << "x" << res << std::endl;
+
+    std::cout << "  threads time    rate   (best of " << ntrials << ")\n";
+    std::cout << "  ------- ------- -------\n";
+    ImageSpec spec (res, res, 3, TypeDesc::FLOAT);
+    ImageBuf X (spec), Y (spec);
+    float one[] = { 1, 1, 1 };
+    ImageBufAlgo::zero (Y);
+    ImageBufAlgo::fill (X, one);
+    float a = 0.5f;
+
+    // Lambda that does some exercise (a basic SAXPY)
+    auto exercise = [&](ROI roi) {
+        ImageBuf::Iterator<float> y (Y, roi);
+        ImageBuf::ConstIterator<float> x (X, roi);
+        for (; ! y.done(); ++y, ++x)
+            for (int c = roi.chbegin; c < roi.chend; ++c)
+                y[c] = a * x[c] + y[c];
+    };
+
+    for (int i = 0; threadcounts[i] <= numthreads; ++i) {
+        int nt = wedge ? threadcounts[i] : numthreads;
+        ImageBufAlgo::zero (Y);
+        auto func = [&](){
+            ImageBufAlgo::parallel_image (Y.roi(), nt, exercise);
+        };
+        double range;
+        double t = time_trial (func, ntrials, iters, &range) / iters;
+        std::cout << Strutil::format ("  %4d   %7.3f ms  %5.1f Mpels/s\n",
+                                      nt, t*1000, double(res*res)/t / 1.0e6);
+        if (! wedge)
+            break;    // don't loop if we're not wedging
+    }
+
+    std::cout << "\nTime new parallel_image for " << res << "x" << res << "\n";
+
+    std::cout << "  threads time    rate   (best of " << ntrials << ")\n";
+    std::cout << "  ------- ------- -------\n";
+    for (int i = 0; threadcounts[i] <= numthreads; ++i) {
+        int nt = wedge ? threadcounts[i] : numthreads;
+        // default_thread_pool()->resize (nt);
+        zero (Y);
+        auto func = [&](){
+            parallel_image (Y.roi(), nt, exercise);
+        };
+        double range;
+        double t = time_trial (func, ntrials, iters, &range) / iters;
+        std::cout << Strutil::format ("  %4d   %6.2f ms  %5.1f Mpels/s\n",
+                                      nt, t*1000, double(res*res)/t / 1.0e6);\
+        if (! wedge)
+            break;    // don't loop if we're not wedging
+    }
+}
+
+
 
 int
 main (int argc, char **argv)
 {
+#if !defined(NDEBUG) || defined(OIIO_CI) || defined(OIIO_CODE_COVERAGE)
+    // For the sake of test time, reduce the default iterations for DEBUG,
+    // CI, and code coverage builds. Explicit use of --iters or --trials
+    // will override this, since it comes before the getargs() call.
+    iterations /= 10;
+    ntrials = 1;
+#endif
+
+    getargs (argc, argv);
+
     test_type_merge ();
     test_zero_fill ();
     test_crop ();
@@ -581,7 +809,14 @@ main (int argc, char **argv)
     test_isConstantChannel ();
     test_isMonochrome ();
     test_computePixelStats ();
+    histogram_computation_test ();
     test_maketx_from_imagebuf ();
-    
+    test_IBAprep ();
+
+    benchmark_parallel_image (64, iterations*64);
+    benchmark_parallel_image (512, iterations*16);
+    benchmark_parallel_image (1024, iterations*4);
+    benchmark_parallel_image (2048, iterations);
+
     return unit_test_failures;
 }

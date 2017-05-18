@@ -29,12 +29,12 @@
 
 #include <iostream>
 
-#include "OpenImageIO/strided_ptr.h"
-#include "OpenImageIO/array_view.h"
-#include "OpenImageIO/image_view.h"
-#include "OpenImageIO/unittest.h"
+#include <OpenImageIO/strided_ptr.h>
+#include <OpenImageIO/array_view.h>
+#include <OpenImageIO/image_view.h>
+#include <OpenImageIO/unittest.h>
 
-OIIO_NAMESPACE_USING;
+using namespace OIIO;
 
 
 
@@ -211,6 +211,22 @@ void test_array_view_mutable ()
     // OIIO_CHECK_EQUAL (*i, 0.0f);
     // ++i;  OIIO_CHECK_EQUAL (*i, 1.0f);
 }
+
+
+
+void test_array_view_initlist ()
+{
+#if OIIO_CPLUSPLUS_VERSION >= 11
+    // Try the array_view syntax with initializer_list.
+    array_view<const float> a { 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 0 };
+    OIIO_CHECK_EQUAL (a.size(), 12);
+    OIIO_CHECK_EQUAL (a[0], 0.0f);
+    OIIO_CHECK_EQUAL (a[1], 1.0f);
+    OIIO_CHECK_EQUAL (a[2], 0.0f);
+    OIIO_CHECK_EQUAL (a[3], 2.0f);
+#endif
+}
+
 
 
 
@@ -396,6 +412,7 @@ int main (int argc, char *argv[])
     test_bounds ();
     test_array_view ();
     test_array_view_mutable ();
+    test_array_view_initlist ();
     test_array_view_2D ();
     test_const_strided_ptr ();
     test_strided_ptr ();

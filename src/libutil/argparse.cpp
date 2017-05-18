@@ -40,10 +40,10 @@
 #include <string>
 #include <sstream>
 
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/sysutil.h"
-#include "OpenImageIO/argparse.h"
-#include "OpenImageIO/dassert.h"
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/sysutil.h>
+#include <OpenImageIO/argparse.h>
+#include <OpenImageIO/dassert.h>
 
 OIIO_NAMESPACE_BEGIN
 
@@ -311,7 +311,7 @@ ArgOption::invoke_callback () const
 void
 ArgOption::add_argument (const char *argv)
 {
-    m_argv.push_back (argv);
+    m_argv.emplace_back(argv);
 }
 
 

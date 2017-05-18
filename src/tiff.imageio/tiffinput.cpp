@@ -32,19 +32,30 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <algorithm>
 
-#include <boost/regex.hpp>
 #include <boost/thread/tss.hpp>
 
 #include <tiffio.h>
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/typedesc.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/thread.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/fmath.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/typedesc.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/thread.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/fmath.h>
+
+#ifdef USE_BOOST_REGEX
+# include <boost/regex.hpp>
+  using boost::regex;
+  using boost::regex_replace;
+#else
+# include <regex>
+  using std::regex;
+  using std::regex_replace;
+#endif
+
 
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
@@ -140,7 +151,9 @@ private:
     bool m_no_random_access;         ///< Should we avoid random access?
     bool m_emulate_mipmap;           ///< Should we emulate mip with subimage?
     bool m_keep_unassociated_alpha;  ///< If the image is unassociated, please
-                                     ///  try to keep it that way!
+                                     ///<   try to keep it that way!
+    bool m_raw_color;                ///< If the image is not RGB, don't
+                                     ///<   transform the color.
     bool m_convert_alpha;            ///< Do we need to associate alpha?
     bool m_separate;                 ///< Separate planarconfig?
     bool m_testopenconfig;           ///< Debug aid to test open-with-config
@@ -159,6 +172,7 @@ private:
         m_subimage = -1;
         m_emulate_mipmap = false;
         m_keep_unassociated_alpha = false;
+        m_raw_color = false;
         m_convert_alpha = false;
         m_separate = false;
         m_inputchannels = 0;
@@ -180,6 +194,9 @@ private:
     // If read_meta is false, assume that m_spec already contains valid
     // metadata and should not be cleared or rewritten.
     void readspec (bool read_meta=true);
+
+    // Figure out all the photometric-related aspects of the header
+    void readspec_photometric ();
 
     // Convert planar separate to contiguous data format
     void separate_to_contig (int nplanes, int nvals,
@@ -213,7 +230,7 @@ private:
             std::cerr << "Error safe_tiffgetfield : did not expect ptr set on "
                       << name << " " << (void *)ptr << "\n";
 #endif
-//            return false;
+            return false;
         }
         return ok;
     }
@@ -221,9 +238,19 @@ private:
     // Get a string tiff tag field and put it into extra_params
     void get_string_attribute (const std::string &name, int tag) {
         char *s = NULL;
-        if (safe_tiffgetfield (name, tag, &s))
-            if (s && *s)
-                m_spec.attribute (name, s);
+        void *ptr = NULL;  // dummy -- expect it to stay NULL
+        bool ok = TIFFGetField (m_tif, tag, &s, &ptr);
+        if (ok && ptr) {
+            // Oy, some tags need 2 args, which are count, then ptr.
+            // There's no way to know ahead of time which ones, so we send
+            // a second pointer. If it gets overwritten, then we understand
+            // and try it again with 2 args, first one is count.
+            unsigned short count;
+            ok = TIFFGetField (m_tif, tag, &count, &s);
+            m_spec.attribute (name, string_view(s,count));
+        }
+        else if (ok && s && *s)
+            m_spec.attribute (name, s);
     }
 
     // Get a matrix tiff tag field and put it into extra_params
@@ -452,6 +479,8 @@ TIFFInput::open (const std::string &name, ImageSpec &newspec,
     // Check 'config' for any special requests
     if (config.get_int_attribute("oiio:UnassociatedAlpha", 0) == 1)
         m_keep_unassociated_alpha = true;
+    if (config.get_int_attribute("oiio:RawColor", 0) == 1)
+        m_raw_color = true;
     // This configuration hint has no function other than as a debugging aid
     // for testing whether configurations are received properly from other
     // OIIO components.
@@ -510,10 +539,13 @@ TIFFInput::seek_subimage (int subimage, int miplevel, ImageSpec &newspec)
         readspec (read_meta);
         // OK, some edge cases we just don't handle. For those, fall back on
         // the TIFFRGBA interface.
-        if (m_compression == COMPRESSION_JPEG || m_compression == COMPRESSION_OJPEG ||
-            m_photometric == PHOTOMETRIC_YCBCR || m_photometric == PHOTOMETRIC_CIELAB ||
+        bool is_jpeg = (m_compression == COMPRESSION_JPEG ||
+                        m_compression == COMPRESSION_OJPEG);
+        bool is_nonspectral =
+           (m_photometric == PHOTOMETRIC_YCBCR || m_photometric == PHOTOMETRIC_CIELAB ||
             m_photometric == PHOTOMETRIC_ICCLAB || m_photometric == PHOTOMETRIC_ITULAB ||
-            m_photometric == PHOTOMETRIC_LOGL || m_photometric == PHOTOMETRIC_LOGLUV) {
+            m_photometric == PHOTOMETRIC_LOGL || m_photometric == PHOTOMETRIC_LOGLUV);
+        if (is_jpeg || (is_nonspectral && ! m_raw_color)) {
             char emsg[1024];
             m_use_rgba_interface = true;
             if (! TIFFRGBAImageOK (m_tif, emsg)) {
@@ -651,12 +683,6 @@ TIFFInput::readspec (bool read_meta)
         m_spec.width = (int)width;
         m_spec.height = (int)height;
         m_spec.depth = (int)depth;
-        m_spec.full_x = 0;
-        m_spec.full_y = 0;
-        m_spec.full_z = 0;
-        m_spec.full_width = (int)width;
-        m_spec.full_height = (int)height;
-        m_spec.full_depth = (int)depth;
         m_spec.nchannels = (int)m_inputchannels;
     }
 
@@ -670,12 +696,25 @@ TIFFInput::readspec (bool read_meta)
     // What happens if this is not unitless pixels?  Are we interpreting
     // it all wrong?
 
-    if (TIFFGetField (m_tif, TIFFTAG_PIXAR_IMAGEFULLWIDTH, &width) == 1
-          && width > 0)
+    // Start by assuming the "full" (aka display) window is the same as the
+    // data window. That's what we'll stick to if there is no further
+    // information in the file. But if the file has tags for hte "full"
+    // size, assume a display window with origin (0,0) and those dimensions.
+    // (Unfortunately, there are no TIFF tags for "full" origin.)
+    m_spec.full_x = m_spec.x;
+    m_spec.full_y = m_spec.y;
+    m_spec.full_z = m_spec.z;
+    m_spec.full_width  = m_spec.width;
+    m_spec.full_height = m_spec.height;
+    m_spec.full_depth  = m_spec.depth;
+    if (TIFFGetField (m_tif, TIFFTAG_PIXAR_IMAGEFULLWIDTH, &width) == 1 &&
+        TIFFGetField (m_tif, TIFFTAG_PIXAR_IMAGEFULLLENGTH, &height) == 1 &&
+          width > 0 && height > 0) {
         m_spec.full_width = width;
-    if (TIFFGetField (m_tif, TIFFTAG_PIXAR_IMAGEFULLLENGTH, &height) == 1
-          && height > 0)
         m_spec.full_height = height;
+        m_spec.full_x = 0;
+        m_spec.full_y = 0;
+    }
 
     if (TIFFIsTiled (m_tif)) {
         TIFFGetField (m_tif, TIFFTAG_TILEWIDTH, &m_spec.tile_width);
@@ -749,7 +788,7 @@ TIFFInput::readspec (bool read_meta)
         for (int i = 0;  tiff_tag_table[i].name;  ++i)
             find_tag (tiff_tag_table[i].tifftag,
                       tiff_tag_table[i].tifftype, tiff_tag_table[i].name);
-        for (int i = 0;  tiff_tag_table[i].name;  ++i)
+        for (int i = 0;  exif_tag_table[i].name;  ++i)
             find_tag (exif_tag_table[i].tifftag,
                       exif_tag_table[i].tifftype, exif_tag_table[i].name);
     }
@@ -757,59 +796,7 @@ TIFFInput::readspec (bool read_meta)
     // Now we need to get fields "by hand" for anything else that is less
     // straightforward...
 
-    m_photometric = (m_spec.nchannels == 1 ? PHOTOMETRIC_MINISBLACK : PHOTOMETRIC_RGB);
-    TIFFGetField (m_tif, TIFFTAG_PHOTOMETRIC, &m_photometric);
-    m_spec.attribute ("tiff:PhotometricInterpretation", (int)m_photometric);
-    switch (m_photometric) {
-    case PHOTOMETRIC_SEPARATED :
-        m_spec.attribute ("tiff:ColorSpace", "CMYK");
-        m_spec.nchannels = 3;   // Silently convert to RGB
-        break;
-    case PHOTOMETRIC_YCBCR  :
-        m_spec.attribute ("tiff:ColorSpace", "YCbCr");
-        break;
-    case PHOTOMETRIC_CIELAB :
-        m_spec.attribute ("tiff:ColorSpace", "CIELAB");
-        break;
-    case PHOTOMETRIC_ICCLAB :
-        m_spec.attribute ("tiff:ColorSpace", "ICCLAB");
-        break;
-    case PHOTOMETRIC_ITULAB :
-        m_spec.attribute ("tiff:ColorSpace", "ITULAB");
-        break;
-    case PHOTOMETRIC_LOGL   :
-        m_spec.attribute ("tiff:ColorSpace", "LOGL");
-        break;
-    case PHOTOMETRIC_LOGLUV :
-        m_spec.attribute ("tiff:ColorSpace", "LOGLUV");
-        break;
-    case PHOTOMETRIC_PALETTE : {
-        m_spec.attribute ("tiff:ColorSpace", "palette");
-        // Read the color map
-        unsigned short *r = NULL, *g = NULL, *b = NULL;
-        TIFFGetField (m_tif, TIFFTAG_COLORMAP, &r, &g, &b);
-        ASSERT (r != NULL && g != NULL && b != NULL);
-        m_colormap.clear ();
-        m_colormap.insert (m_colormap.end(), r, r + (1 << m_bitspersample));
-        m_colormap.insert (m_colormap.end(), g, g + (1 << m_bitspersample));
-        m_colormap.insert (m_colormap.end(), b, b + (1 << m_bitspersample));
-        // Palette TIFF images are always 3 channels (to the client)
-        m_spec.nchannels = 3;
-        m_spec.default_channel_names ();
-        if (m_bitspersample != m_spec.format.size()*8) {
-            // For palette images with unusual bits per sample, set
-            // oiio:BitsPerSample to the "full" version, to avoid problems
-            // when copying the file back to a TIFF file (we don't write
-            // palette images), but do leave "tiff:BitsPerSample" to reflect
-            // the original file.
-            m_spec.attribute ("tiff:BitsPerSample", (int)m_bitspersample);
-            m_spec.attribute ("oiio:BitsPerSample", (int)m_spec.format.size()*8);
-        }
-        // FIXME - what about palette + extra (alpha?) channels?  Is that
-        // allowed?  And if so, ever encountered in the wild?
-        break;
-        }
-    }
+    readspec_photometric ();
 
     TIFFGetFieldDefaulted (m_tif, TIFFTAG_PLANARCONFIG, &m_planarconfig);
     m_separate = (m_planarconfig == PLANARCONFIG_SEPARATE &&
@@ -960,7 +947,7 @@ TIFFInput::readspec (bool read_meta)
             // Exif spec says that anything other than 0xffff==uncalibrated
             // should be interpreted to be sRGB.
             if (*(const int *)p->data() != 0xffff)
-                m_spec.attribute ("oiio::ColorSpace", "sRGB");
+                m_spec.attribute ("oiio:ColorSpace", "sRGB");
         }
     }
 #endif
@@ -1020,23 +1007,23 @@ TIFFInput::readspec (bool read_meta)
     found = desc.rfind ("oiio:ConstantColor=");
     if (found != std::string::npos) {
         size_t begin = desc.find_first_of ('=', found) + 1;
-        size_t end = desc.find_first_of (' ', begin);
+        size_t end = std::min (desc.find_first_of (' ', begin), desc.size());
         string_view s = string_view (desc.data()+begin, end-begin);
         m_spec.attribute ("oiio:ConstantColor", s);
         const std::string constcolor_pattern =
             std::string ("oiio:ConstantColor=(\\[?") + fp_number_pattern + ",?)+\\]?[ ]*";
-        desc = boost::regex_replace (desc, boost::regex(constcolor_pattern), "");
+        desc = regex_replace (desc, regex(constcolor_pattern), "");
         updatedDesc = true;
     }
     found = desc.rfind ("oiio:AverageColor=");
     if (found != std::string::npos) {
         size_t begin = desc.find_first_of ('=', found) + 1;
-        size_t end = desc.find_first_of (' ', begin);
+        size_t end = std::min (desc.find_first_of (' ', begin), desc.size());
         string_view s = string_view (desc.data()+begin, end-begin);
         m_spec.attribute ("oiio:AverageColor", s);
         const std::string average_pattern =
             std::string ("oiio:AverageColor=(\\[?") + fp_number_pattern + ",?)+\\]?[ ]*";
-        desc = boost::regex_replace (desc, boost::regex(average_pattern), "");
+        desc = regex_replace (desc, regex(average_pattern), "");
         updatedDesc = true;
     }
     found = desc.rfind ("oiio:SHA-1=");
@@ -1044,11 +1031,11 @@ TIFFInput::readspec (bool read_meta)
         found = desc.rfind ("SHA-1=");
     if (found != std::string::npos) {
         size_t begin = desc.find_first_of ('=', found) + 1;
-        size_t end = begin+40;
+        size_t end = std::min (begin+40, desc.size());
         string_view s = string_view (desc.data()+begin, end-begin);
         m_spec.attribute ("oiio:SHA-1", s);
-        desc = boost::regex_replace (desc, boost::regex("oiio:SHA-1=[[:xdigit:]]*[ ]*"), "");
-        desc = boost::regex_replace (desc, boost::regex("SHA-1=[[:xdigit:]]*[ ]*"), "");
+        desc = regex_replace (desc, regex("oiio:SHA-1=[[:xdigit:]]*[ ]*"), "");
+        desc = regex_replace (desc, regex("SHA-1=[[:xdigit:]]*[ ]*"), "");
         updatedDesc = true;
     }
     if (updatedDesc) {
@@ -1060,6 +1047,113 @@ TIFFInput::readspec (bool read_meta)
 
     if (m_testopenconfig)  // open-with-config debugging
         m_spec.attribute ("oiio:DebugOpenConfig!", 42);
+}
+
+
+
+void
+TIFFInput::readspec_photometric ()
+{
+    m_photometric = (m_spec.nchannels == 1 ? PHOTOMETRIC_MINISBLACK : PHOTOMETRIC_RGB);
+    TIFFGetField (m_tif, TIFFTAG_PHOTOMETRIC, &m_photometric);
+    m_spec.attribute ("tiff:PhotometricInterpretation", (int)m_photometric);
+    switch (m_photometric) {
+    case PHOTOMETRIC_SEPARATED : {
+        // Photometric "separated" is "usually CMYK".
+        m_spec.channelnames.clear ();
+        short inkset = INKSET_CMYK;
+        short numberofinks = 0;
+        TIFFGetFieldDefaulted (m_tif, TIFFTAG_INKSET, &inkset);
+        TIFFGetFieldDefaulted (m_tif, TIFFTAG_NUMBEROFINKS, &numberofinks);
+        if (inkset == INKSET_CMYK && m_spec.nchannels == 4) {
+            // True CMYK
+            m_spec.attribute ("tiff:ColorSpace", "CMYK");
+            if (m_raw_color) {
+                m_spec.channelnames.resize (4);
+                m_spec.channelnames[0] = "C";
+                m_spec.channelnames[1] = "M";
+                m_spec.channelnames[2] = "Y";
+                m_spec.channelnames[3] = "K";
+                m_spec.attribute ("oiio:ColorSpace", "CMYK");
+            } else {
+                // Silently convert to RGB
+                m_spec.nchannels = 3;
+                m_spec.default_channel_names ();
+            }
+        } else {
+            // Non-CMYK ink set
+            m_spec.attribute ("tiff:ColorSpace", "color separated");
+            m_spec.attribute ("oiio:ColorSpace", "color separated");
+            m_raw_color = true;   // Conversion to RGB doesn't make sense
+            const char* inknames = NULL;
+            safe_tiffgetfield ("tiff:InkNames", TIFFTAG_INKNAMES, &inknames);
+            if (inknames && inknames[0] && numberofinks) {
+                m_spec.channelnames.clear ();
+                // Decode the ink names, which are all concatenated together.
+                for (int i = 0; i < int(numberofinks); ++i) {
+                    string_view ink (inknames);
+                    if (ink.size()) {
+                        m_spec.channelnames.emplace_back (ink);
+                        inknames += ink.size() + 1;
+                    } else {
+                        // Run out of road
+                        numberofinks = i;
+                    }
+                }
+            } else {
+                numberofinks = 0;
+            }
+            // No ink names. Make it up.
+            for (int i = numberofinks; i < m_spec.nchannels; ++i)
+                m_spec.channelnames.emplace_back (Strutil::format ("ink%d", i));
+        }
+        break;
+        }
+    case PHOTOMETRIC_YCBCR  :
+        m_spec.attribute ("tiff:ColorSpace", "YCbCr");
+        break;
+    case PHOTOMETRIC_CIELAB :
+        m_spec.attribute ("tiff:ColorSpace", "CIELAB");
+        break;
+    case PHOTOMETRIC_ICCLAB :
+        m_spec.attribute ("tiff:ColorSpace", "ICCLAB");
+        break;
+    case PHOTOMETRIC_ITULAB :
+        m_spec.attribute ("tiff:ColorSpace", "ITULAB");
+        break;
+    case PHOTOMETRIC_LOGL   :
+        m_spec.attribute ("tiff:ColorSpace", "LOGL");
+        break;
+    case PHOTOMETRIC_LOGLUV :
+        m_spec.attribute ("tiff:ColorSpace", "LOGLUV");
+        break;
+    case PHOTOMETRIC_PALETTE : {
+        m_spec.attribute ("tiff:ColorSpace", "palette");
+        // Read the color map
+        unsigned short *r = NULL, *g = NULL, *b = NULL;
+        TIFFGetField (m_tif, TIFFTAG_COLORMAP, &r, &g, &b);
+        ASSERT (r != NULL && g != NULL && b != NULL);
+        m_colormap.clear ();
+        m_colormap.insert (m_colormap.end(), r, r + (1 << m_bitspersample));
+        m_colormap.insert (m_colormap.end(), g, g + (1 << m_bitspersample));
+        m_colormap.insert (m_colormap.end(), b, b + (1 << m_bitspersample));
+        // Palette TIFF images are always 3 channels (to the client)
+        m_spec.nchannels = 3;
+        m_spec.default_channel_names ();
+        if (m_bitspersample != m_spec.format.size()*8) {
+            // For palette images with unusual bits per sample, set
+            // oiio:BitsPerSample to the "full" version, to avoid problems
+            // when copying the file back to a TIFF file (we don't write
+            // palette images), but do leave "tiff:BitsPerSample" to reflect
+            // the original file.
+            m_spec.attribute ("tiff:BitsPerSample", (int)m_bitspersample);
+            m_spec.attribute ("oiio:BitsPerSample", (int)m_spec.format.size()*8);
+        }
+        // FIXME - what about palette + extra (alpha?) channels?  Is that
+        // allowed?  And if so, ever encountered in the wild?
+        break;
+        }
+    }
 }
 
 
@@ -1280,7 +1374,8 @@ TIFFInput::read_native_scanline (int y, int z, void *data)
     // Where to read?  Directly into user data if no channel shuffling, bit
     // shifting, or CMYK conversion is needed, otherwise into scratch space.
     unsigned char *readbuf = (unsigned char *)data;
-    if (need_bit_convert || m_separate || m_photometric == PHOTOMETRIC_SEPARATED)
+    if (need_bit_convert || m_separate ||
+        (m_photometric == PHOTOMETRIC_SEPARATED && ! m_raw_color))
         readbuf = &m_scratch[0];
     // Perform the reads.  Note that for contig, planes==1, so it will
     // only do one TIFFReadScanline.
@@ -1315,7 +1410,7 @@ TIFFInput::read_native_scanline (int y, int z, void *data)
         // Convert from separate (RRRGGGBBB) to contiguous (RGBRGBRGB).
         // We know the data is in m_scratch at this point, so 
         // contiguize it into the user data area.
-        if (m_photometric == PHOTOMETRIC_SEPARATED) {
+        if (m_photometric == PHOTOMETRIC_SEPARATED && ! m_raw_color) {
             // CMYK->RGB means we need temp storage.
             m_scratch2.resize (input_bytes);
             separate_to_contig (planes, m_spec.width, &m_scratch[0], &m_scratch2[0]);
@@ -1328,7 +1423,7 @@ TIFFInput::read_native_scanline (int y, int z, void *data)
     }
 
     // Handle CMYK
-    if (m_photometric == PHOTOMETRIC_SEPARATED) {
+    if (m_photometric == PHOTOMETRIC_SEPARATED && ! m_raw_color) {
         // The CMYK will be in m_scratch.
         if (spec().format == TypeDesc::UINT8) {
             cmyk_to_rgb (m_spec.width, (unsigned char *)&m_scratch[0], m_inputchannels,

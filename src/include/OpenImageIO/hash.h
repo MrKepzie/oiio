@@ -39,33 +39,31 @@
 #define OPENIMAGEIO_HASH_H
 
 #include <vector>
-#include <assert.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>   // for memcpy and memset
+#include <cassert>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <utility>
+#include <unordered_map>
 
-#include "export.h"
-#include "oiioversion.h"
-#include "fmath.h"   /* for endian */
-#include "string_view.h"
-#include "array_view.h"
+#include <OpenImageIO/export.h>
+#include <OpenImageIO/oiioversion.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/string_view.h>
+#include <OpenImageIO/array_view.h>
+
 
 
 OIIO_NAMESPACE_BEGIN
+
+using std::unordered_map;
+using std::hash;
+
 
 namespace xxhash {
 
 // xxhash:  http://code.google.com/p/xxhash/
 // It's BSD licensed.
-
-OIIO_DEPRECATED("Use XXH32(). (Deprecated since 1.6.")
-unsigned int OIIO_API XXH_fast32 (const void* input, int len,
-                                  unsigned int seed=1771);
-
-OIIO_DEPRECATED("Use XXH32(). (Deprecated since 1.6.")
-unsigned int OIIO_API XXH_strong32 (const void* input, int len,
-                                    unsigned int seed=1771);
 
 unsigned int       OIIO_API XXH32 (const void* input, size_t length,
                                    unsigned seed=1771);

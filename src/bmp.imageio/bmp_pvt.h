@@ -31,9 +31,9 @@
 #define OPENIMAGEIO_BMP_H
 
 #include <cstdio>
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/fmath.h"
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/fmath.h>
 
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
@@ -47,6 +47,7 @@ namespace bmp_pvt {
     const int OS2_V1 = 12;
     const int WINDOWS_V3 = 40;
     const int WINDOWS_V4 = 108;
+    const int WINDOWS_V5 = 124;
 
     // bmp magic numbers
     const int16_t MAGIC_BM = 0x4D42;
@@ -119,6 +120,13 @@ namespace bmp_pvt {
          int32_t gamma_x;
          int32_t gamma_y;
          int32_t gamma_z;
+
+         // added in Version 5 of the format
+         int32_t intent;
+         int32_t profile_data;
+         int32_t profile_size;
+         int32_t reserved;
+
      private:
          void swap_endian (void);
     };
@@ -143,7 +151,7 @@ class BmpInput : public ImageInput {
     virtual bool close (void);
     virtual bool read_native_scanline (int y, int z, void *data);
  private:
-    int m_scanline_size;
+    int m_padded_scanline_size;
     int m_pad_size;
     FILE *m_fd;
     bmp_pvt::BmpFileHeader m_bmp_header;
@@ -152,7 +160,7 @@ class BmpInput : public ImageInput {
     std::vector<bmp_pvt::color_table> m_colortable;
     fpos_t m_image_start;
     void init (void) {
-        m_scanline_size = 0;
+        m_padded_scanline_size = 0;
         m_pad_size = 0;
         m_fd = NULL;
         m_filename.clear ();
@@ -179,7 +187,7 @@ class BmpOutput : public ImageOutput {
                              const void *data, stride_t xstride,
                              stride_t ystride, stride_t zstride);
  private:
-    int m_scanline_size;
+    int m_padded_scanline_size;
     FILE *m_fd;
     std::string m_filename;
     bmp_pvt::BmpFileHeader m_bmp_header;
@@ -189,7 +197,7 @@ class BmpOutput : public ImageOutput {
     std::vector<unsigned char> m_tilebuffer;
 
     void init (void) {
-        m_scanline_size = 0;
+        m_padded_scanline_size = 0;
         m_fd = NULL;
         m_filename.clear ();
     }

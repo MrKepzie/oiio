@@ -35,13 +35,13 @@
 #include <zlib.h>
 #include <OpenEXR/ImathColor.h>
 
-#include "OpenImageIO/dassert.h"
-#include "OpenImageIO/typedesc.h"
-#include "OpenImageIO/imageio.h"
-#include "OpenImageIO/strutil.h"
-#include "OpenImageIO/filesystem.h"
-#include "OpenImageIO/fmath.h"
-#include "OpenImageIO/sysutil.h"
+#include <OpenImageIO/dassert.h>
+#include <OpenImageIO/typedesc.h>
+#include <OpenImageIO/imageio.h>
+#include <OpenImageIO/strutil.h>
+#include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/sysutil.h>
 
 
 #define OIIO_LIBPNG_VERSION (PNG_LIBPNG_VER_MAJOR*10000 + PNG_LIBPNG_VER_MINOR*100 + PNG_LIBPNG_VER_RELEASE)
@@ -154,6 +154,12 @@ read_info (png_structp& sp, png_infop& ip, int& bit_depth, int& color_type,
                        bit_depth == 16 ? TypeDesc::UINT16 : TypeDesc::UINT8);
 
     spec.default_channel_names ();
+    if (spec.nchannels == 2) {
+        // Special case: PNG spec says 2-channel image is Gray & Alpha
+        spec.channelnames[0] = "Y";
+        spec.channelnames[1] = "A";
+        spec.alpha_channel = 1;
+    }
 
     int srgb_intent;
     if (png_get_sRGB (sp, ip, &srgb_intent)) {
@@ -161,8 +167,18 @@ read_info (png_structp& sp, png_infop& ip, int& bit_depth, int& color_type,
     } else {
         double gamma;
         if (png_get_gAMA (sp, ip, &gamma)) {
-            spec.attribute ("oiio:Gamma", (float)(1.0f/gamma));
-            spec.attribute ("oiio:ColorSpace", (gamma == 1) ? "Linear" : "GammaCorrected");
+            // Round gamma to the nearest hundredth to prevent stupid
+            // precision choices and make it easier for apps to make
+            // decisions based on known gamma values. For example, you want
+            // 2.2, not 2.19998.
+            float g = float (1.0 / gamma);
+            g = roundf (100.0 * g) / 100.0f;
+            spec.attribute ("oiio:Gamma", g);
+            if (g == 1.0f)
+                spec.attribute ("oiio:ColorSpace", "linear");
+            else
+                spec.attribute ("oiio:ColorSpace",
+                                Strutil::format("GammaCorrected%.2g", g));
         }
     }
 
@@ -183,7 +199,7 @@ read_info (png_structp& sp, png_infop& ip, int& bit_depth, int& color_type,
 
     png_timep mod_time;
     if (png_get_tIME (sp, ip, &mod_time)) {
-        std::string date = Strutil::format ("%4d:%02d:%02d %2d:%02d:%02d",
+        std::string date = Strutil::format ("%4d:%02d:%02d %02d:%02d:%02d",
                            mod_time->year, mod_time->month, mod_time->day,
                            mod_time->hour, mod_time->minute, mod_time->second);
         spec.attribute ("DateTime", date); 
@@ -329,14 +345,28 @@ create_write_struct (png_structp& sp, png_infop& ip, int& color_type,
         return "PNG does not support volume images (depth > 1)";
 
     switch (spec.nchannels) {
-    case 1 : color_type = PNG_COLOR_TYPE_GRAY; break;
-    case 2 : color_type = PNG_COLOR_TYPE_GRAY_ALPHA; break;
-    case 3 : color_type = PNG_COLOR_TYPE_RGB; break;
-    case 4 : color_type = PNG_COLOR_TYPE_RGB_ALPHA; break;
+    case 1 :
+        color_type = PNG_COLOR_TYPE_GRAY;
+        spec.alpha_channel = -1;
+        break;
+    case 2 :
+        color_type = PNG_COLOR_TYPE_GRAY_ALPHA;
+        spec.alpha_channel = 1;
+        break;
+    case 3 :
+        color_type = PNG_COLOR_TYPE_RGB;
+        spec.alpha_channel = -1;
+        break;
+    case 4 :
+        color_type = PNG_COLOR_TYPE_RGB_ALPHA;
+        spec.alpha_channel = 3;
+        break;
     default:
         return Strutil::format  ("PNG only supports 1-4 channels, not %d",
                                  spec.nchannels);
     }
+    // N.B. PNG is very rigid about the meaning of the channels, so enforce
+    // which channel is alpha, that's the only way PNG can do it.
 
     sp = png_create_write_struct (PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
     if (! sp)
@@ -386,7 +416,7 @@ put_parameter (png_structp& sp, png_infop& ip, const std::string &_name,
     if (Strutil::iequals(name, "DateTime") && type == TypeDesc::STRING) {
         png_time mod_time;
         int year, month, day, hour, minute, second;
-        if (sscanf (*(const char **)data, "%4d:%02d:%02d %2d:%02d:%02d",
+        if (sscanf (*(const char **)data, "%4d:%02d:%02d %02d:%02d:%02d",
                     &year, &month, &day, &hour, &minute, &second) == 6) {
             mod_time.year = year;
             mod_time.month = month;
@@ -469,7 +499,10 @@ write_info (png_structp& sp, png_infop& ip, int& color_type,
     if (Strutil::iequals (colorspace, "Linear")) {
         png_set_gAMA (sp, ip, 1.0);
     }
-    else if (Strutil::iequals (colorspace, "GammaCorrected")) {
+    else if (Strutil::istarts_with (colorspace, "GammaCorrected")) {
+        float g = Strutil::from_string<float>(colorspace.c_str()+14);
+        if (g >= 0.01f && g <= 10.0f /* sanity check */)
+            gamma = g;
         png_set_gAMA (sp, ip, 1.0f/gamma);
     }
     else if (Strutil::iequals (colorspace, "sRGB")) {
@@ -496,7 +529,7 @@ write_info (png_structp& sp, png_infop& ip, int& color_type,
         time (&now);
         struct tm mytm;
         Sysutil::get_local_time (&now, &mytm);
-        std::string date = Strutil::format ("%4d:%02d:%02d %2d:%02d:%02d",
+        std::string date = Strutil::format ("%4d:%02d:%02d %02d:%02d:%02d",
                                mytm.tm_year+1900, mytm.tm_mon+1, mytm.tm_mday,
                                mytm.tm_hour, mytm.tm_min, mytm.tm_sec);
         spec.attribute ("DateTime", date);
